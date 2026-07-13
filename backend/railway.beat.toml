@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyMaxRetries = 3
+restartPolicyType = "ON_FAILURE"
+startCommand = "uv run celery -A config beat --loglevel=INFO"

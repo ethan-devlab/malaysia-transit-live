@@ -1,0 +1,16 @@
+{
+  "name": "Malaysia Transit Live",
+  "short_name": "Transit Live",
+  "description": "Scheduled and verified live public transport information for Malaysia.",
+  "display": "standalone",
+  "background_color": "#f7f9fc",
+  "theme_color": "#075ea8",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

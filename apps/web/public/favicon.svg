@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Malaysia Transit Live">
+  <rect width="64" height="64" fill="#075ea8"/>
+  <path d="M18 13h28v28c0 6-4.8 11-11 11H29c-6.2 0-11-5-11-11V13Zm6 7v13h16V20H24Zm3 30-7 7m17-7 7 7M25 40h.1m13.8 0h.1" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+</svg>

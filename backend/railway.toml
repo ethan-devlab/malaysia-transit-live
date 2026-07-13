@@ -1,0 +1,11 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/v1/healthz"
+healthcheckTimeout = 30
+preDeployCommand = ["uv run python manage.py migrate --noinput"]
+restartPolicyMaxRetries = 3
+restartPolicyType = "ON_FAILURE"
+startCommand = "sh -c 'uv run uvicorn config.asgi:application --host 0.0.0.0 --port ${PORT:-8000}'"

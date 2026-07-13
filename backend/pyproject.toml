@@ -1,0 +1,74 @@
+[project]
+name = "malaysia-transit-backend"
+version = "0.1.0"
+description = "Django services for Malaysia Transit Live"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "boto3>=1.43.46",
+    "celery>=5.6.3",
+    "django>=6.0.7",
+    "django-csp>=4.0",
+    "django-ninja>=1.6.2",
+    "django-redis>=7.0.0",
+    "gtfs-realtime-bindings>=2.1.0",
+    "httpx2>=2.5.0",
+    "psycopg[binary]>=3.3.4",
+    "pydantic-settings>=2.14.2",
+    "python-dotenv>=1.2.2",
+    "redis>=8.0.1",
+    "structlog>=26.1.0",
+    "uvicorn[standard]>=0.34.0",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812", # Conflicts with Ruff's formatter.
+    "D107", # Small exception and service constructors remain self-evident.
+    "D203", # Incompatible with D211.
+    "D212", # Incompatible with D213.
+    "EM101",
+    "EM102",
+    "TC001",
+    "TC003", # Django and Ninja inspect annotations at runtime.
+    "TRY003", # Public exception messages are intentionally declared at call sites.
+    "PLR0913", # Data-mapping boundaries legitimately carry several values.
+    "PLR2004", # Protocol and coordinate bounds are clearer as literals.
+    "TC002",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"config/__init__.py" = ["E402"]
+"config/settings.py" = ["S105"]
+"manage.py" = ["PLC0415"]
+"tests/**/*.py" = ["D100", "D103", "S101"]
+"transit/http/origin.py" = ["D102", "S105"]
+"transit/http/schemas.py" = ["D101"]
+"transit/management/commands/*.py" = ["ANN401", "ARG002", "D102"]
+"transit/migrations/*.py" = ["D100", "D101", "RUF012"]
+"transit/models/*.py" = ["D101", "D105", "D106", "DJ008"]
+
+[tool.basedpyright]
+typeCheckingMode = "all"
+pythonVersion = "3.12"
+include = ["config", "transit", "tests"]
+reportMissingTypeStubs = "warning"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.9",
+    "django-stubs>=6.0.6",
+    "pytest>=9.1.1",
+    "pytest-django>=4.12.0",
+    "ruff>=0.15.21",
+]

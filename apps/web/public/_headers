@@ -1,0 +1,7 @@
+/*
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; connect-src 'self' https://api.maptiler.com; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob: https://api.maptiler.com; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src blob:
+  Permissions-Policy: geolocation=(), microphone=(), camera=()
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY

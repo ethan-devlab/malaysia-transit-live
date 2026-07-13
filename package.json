@@ -1,0 +1,10 @@
+{
+  "name": "malaysia-transit-live",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "build": "pnpm --filter @malaysia-transit/web build && pnpm --filter @malaysia-transit/edge build",
+    "check": "pnpm --filter @malaysia-transit/web check && pnpm --filter @malaysia-transit/edge check",
+    "test": "pnpm --filter @malaysia-transit/web test && pnpm --filter @malaysia-transit/edge test"
+  }
+}
