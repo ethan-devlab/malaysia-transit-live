@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
-from transit.services.r2_archive import ArchiveConfigurationError, R2ArchiveStore
+from transit.services.archive_store import ArchiveConfigurationError, archive_store_from_environment
+from transit.services.static_import.retention import prune_local_audit_history
 from transit.services.static_refresh import StaticFeedRefresher
 
 
 class Command(BaseCommand):
     """Perform the serial 4-requests-per-minute static refresh workflow."""
 
-    help = "Refresh one or all official GTFS static feeds through R2 archiving."
+    help = "Refresh one or all official GTFS static feeds through the configured archive store."
 
     def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument("--feed", help="Optional official feed slug to refresh.")
@@ -22,11 +24,14 @@ class Command(BaseCommand):
         if feed_option is not None and not isinstance(feed_option, str):
             raise CommandError("Feed option must be a string.")
         try:
-            refresher = StaticFeedRefresher(R2ArchiveStore.from_environment())
+            archive_store = archive_store_from_environment()
+            refresher = StaticFeedRefresher(archive_store)
             results = refresher.refresh_all(feed_option)
         except (ArchiveConfigurationError, ValueError) as error:
             raise CommandError(str(error)) from error
 
+        if settings.LOCAL_ONLY:
+            prune_local_audit_history(archive_store)
         active_count = sum(result.status == "active" for result in results)
         failed_count = len(results) - active_count
         result_lines = [

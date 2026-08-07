@@ -35,12 +35,6 @@ class StopSearchItem(Schema):
     source: SourceMetadata
 
 
-class SearchResponse(Schema):
-    query: str
-    routes: list[RouteSearchItem]
-    stops: list[StopSearchItem]
-
-
 class RouteDetail(Schema):
     route_id: str
     short_name: str
@@ -63,6 +57,8 @@ class TripStop(Schema):
     sequence: int
     stop_id: str
     name: str
+    latitude: float | None
+    longitude: float | None
     arrival_time: str
     departure_time: str
 
@@ -117,9 +113,111 @@ class VehicleLocation(Schema):
     static_version_id: str | None
 
 
+class SearchResponse(Schema):
+    query: str
+    journeys: list[ScheduledJourney]
+    routes: list[RouteSearchItem]
+    stops: list[StopSearchItem]
+    vehicles: list[VehicleLocation]
+
+
 class DataStatus(Schema):
     feed: str
     static_state: Literal["active", "unavailable"]
+    realtime_state: Literal["available", "awaiting_first_fetch", "scheduled_only", "unavailable"]
     active_version_id: str | None
     last_successful_static_fetch_at: datetime | None
     last_successful_realtime_fetch_at: datetime | None
+
+
+DashboardMode = Literal["bus", "mrt", "lrt", "monorail", "rail", "unknown"]
+DashboardRealtimeState = Literal[
+    "available",
+    "awaiting_first_fetch",
+    "scheduled_only",
+    "unavailable",
+]
+
+
+class DashboardOption(Schema):
+    key: str
+    label: str
+    count: int
+
+
+class DashboardFilters(Schema):
+    mode: str
+    operator: str | None
+    region: str | None
+
+
+class DashboardVehicle(Schema):
+    feed: str
+    feed_display_name: str
+    operator_key: str
+    operator_name: str
+    region_key: str
+    region_name: str
+    agency_names: list[str]
+    mode: DashboardMode
+    vehicle_id: str
+    trip_id: str
+    route_id: str
+    route_name: str
+    trip_headsign: str
+    latitude: float
+    longitude: float
+    bearing: float | None
+    speed_metres_per_second: float | None
+    position_reported_at: datetime | None
+    fetched_at: datetime
+    freshness: Literal["live", "stale"]
+    static_version_id: str | None
+    next_scheduled_stop: str | None
+
+
+class DashboardSource(Schema):
+    feed: str
+    display_name: str
+    operator_key: str
+    operator_name: str
+    region_key: str
+    region_name: str
+    agency_names: list[str]
+    modes: list[DashboardMode]
+    static_state: Literal["active", "unavailable"]
+    realtime_state: DashboardRealtimeState
+    last_successful_static_fetch_at: datetime | None
+    last_successful_realtime_fetch_at: datetime | None
+    vehicle_count: int
+    live_vehicle_count: int
+    stale_vehicle_count: int
+    unknown_vehicle_count: int
+
+
+class DashboardSummary(Schema):
+    feed_count: int
+    vehicle_count: int
+    live_vehicle_count: int
+    stale_vehicle_count: int
+    unknown_vehicle_count: int
+    scheduled_only_feed_count: int
+    unavailable_feed_count: int
+    awaiting_first_fetch_feed_count: int
+
+
+class DashboardVehiclePage(Schema):
+    items: list[DashboardVehicle]
+    total_count: int
+    returned_count: int
+    next_cursor: str | None
+    truncated: bool
+
+
+class DashboardResponse(Schema):
+    generated_at: datetime
+    filters: DashboardFilters
+    options: dict[str, list[DashboardOption]]
+    summary: DashboardSummary
+    sources: list[DashboardSource]
+    vehicles: DashboardVehiclePage

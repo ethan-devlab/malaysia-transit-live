@@ -4,6 +4,7 @@ from ninja import NinjaAPI
 
 from transit.http.journeys_api import router as journeys_router
 from transit.http.network_api import router as network_router
+from transit.http.dashboard_api import router as dashboard_router
 from transit.http.status_api import router as status_router
 
 api = NinjaAPI(
@@ -15,3 +16,4 @@ api = NinjaAPI(
 api.add_router("", network_router)
 api.add_router("", journeys_router)
 api.add_router("", status_router)
+api.add_router("", dashboard_router)

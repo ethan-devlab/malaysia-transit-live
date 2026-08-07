@@ -20,6 +20,8 @@ ROUTE_MODE_NAMES: dict[int, str] = {
     11: "trolleybus",
     12: "monorail",
 }
+FEED_MODE_OVERRIDES = {"ktmb": "rail"}
+DASHBOARD_MODE_VALUES = ("bus", "mrt", "lrt", "monorail", "rail", "unknown")
 
 
 def active_feed_version(feed_slug: str) -> tuple[TransitFeed, StaticFeedVersion]:
@@ -34,9 +36,29 @@ def active_feed_version(feed_slug: str) -> tuple[TransitFeed, StaticFeedVersion]
     return feed, version
 
 
-def route_mode(route_type: int) -> str:
+def route_mode(route_type: int, feed_slug: str = "") -> str:
     """Map standardized GTFS route types to public transport mode labels."""
-    return ROUTE_MODE_NAMES.get(route_type, "other")
+    return FEED_MODE_OVERRIDES.get(feed_slug, ROUTE_MODE_NAMES.get(route_type, "other"))
+
+
+def dashboard_mode(route: GtfsRoute | None, feed_slug: str = "") -> str:
+    if route is None:
+        return "unknown"
+    label = " ".join((route.short_name, route.long_name, route.description)).upper()
+    legacy_mode = route_mode(route.route_type, feed_slug)
+    if legacy_mode == "bus":
+        return "bus"
+    if legacy_mode == "monorail" or "MONORAIL" in label:
+        return "monorail"
+    if legacy_mode == "metro":
+        if "LRT" in label or "BRT" in label:
+            return "lrt"
+        return "mrt"
+    if legacy_mode == "tram":
+        return "lrt"
+    if legacy_mode == "rail":
+        return "rail"
+    return "unknown"
 
 
 def route_search_item(route: GtfsRoute) -> RouteSearchItem:
@@ -45,7 +67,7 @@ def route_search_item(route: GtfsRoute) -> RouteSearchItem:
         route_id=route.route_id,
         label=route.short_name or route.long_name or route.route_id,
         name=route.long_name,
-        mode=route_mode(route.route_type),
+        mode=route_mode(route.route_type, route.feed_version.feed.slug),
         source=source_metadata(route.feed_version.feed, route.feed_version),
     )
 

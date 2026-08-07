@@ -7,14 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import boto3
+from boto3.exceptions import S3UploadFailedError
+from botocore.exceptions import BotoCoreError, ClientError
 
-
-class ArchiveConfigurationError(RuntimeError):
-    """Raised when the worker lacks a complete R2 configuration."""
-
-
-class ArchiveUploadError(RuntimeError):
-    """Raised when an original GTFS ZIP cannot be preserved in R2."""
+from transit.services.archive_contracts import ArchiveConfigurationError, ArchiveStorageError
 
 
 @dataclass(frozen=True)
@@ -69,5 +65,12 @@ class R2ArchiveStore:
                 object_key,
                 ExtraArgs={"ContentType": "application/zip"},
             )
-        except Exception as error:  # boto3 has a broad hierarchy across endpoint failures.
-            raise ArchiveUploadError("Unable to archive the original GTFS ZIP in R2.") from error
+        except (BotoCoreError, ClientError, S3UploadFailedError) as error:
+            raise ArchiveStorageError("Unable to archive the original GTFS ZIP in R2.") from error
+
+    def delete_zip(self, object_key: str) -> None:
+        """Remove a no-longer-retained source ZIP from the private R2 bucket."""
+        try:
+            self._client.delete_object(Bucket=self._bucket_name, Key=object_key)
+        except (BotoCoreError, ClientError) as error:
+            raise ArchiveStorageError("Unable to remove an obsolete GTFS ZIP from R2.") from error

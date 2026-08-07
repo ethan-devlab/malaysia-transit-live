@@ -44,8 +44,8 @@ def import_static_gtfs_archive(
     )
     try:
         with zipfile.ZipFile(archive_path) as archive, transaction.atomic():
-            record_counts = _load_all_records(archive, version)
-            warnings = _build_warnings(archive)
+            record_counts, orphan_stop_time_count = _load_all_records(archive, version)
+            warnings = _build_warnings(archive, orphan_stop_time_count)
             _activate_version(version, record_counts, warnings)
     except StaticImportError as error:
         _reject_version(version, error)
@@ -70,16 +70,21 @@ def import_static_gtfs_archive(
 def _load_all_records(
     archive: zipfile.ZipFile,
     version: StaticFeedVersion,
-) -> dict[str, int]:
+) -> tuple[dict[str, int], int]:
     service_count, exception_count = load_services(archive, version)
+    agency_count = load_agencies(archive, version)
+    route_count = load_routes(archive, version)
+    stop_count = load_stops(archive, version)
+    trip_count = load_trips(archive, version)
+    stop_time_count, orphan_stop_time_count = load_stop_times(archive, version)
     record_counts = {
-        "agencies": load_agencies(archive, version),
-        "routes": load_routes(archive, version),
-        "stops": load_stops(archive, version),
+        "agencies": agency_count,
+        "routes": route_count,
+        "stops": stop_count,
         "services": service_count,
         "service_exceptions": exception_count,
-        "trips": load_trips(archive, version),
-        "stop_times": load_stop_times(archive, version),
+        "trips": trip_count,
+        "stop_times": stop_time_count,
     }
     for record_name, source_file in REQUIRED_RECORD_FILES.items():
         if record_counts[record_name] == 0:
@@ -88,10 +93,13 @@ def _load_all_records(
                 f"{source_file} contains no usable records.",
                 source_file,
             )
-    return record_counts
+    return record_counts, orphan_stop_time_count
 
 
-def _build_warnings(archive: zipfile.ZipFile) -> tuple[tuple[str, str, str], ...]:
+def _build_warnings(
+    archive: zipfile.ZipFile,
+    orphan_stop_time_count: int,
+) -> tuple[tuple[str, str, str], ...]:
     warnings: list[tuple[str, str, str]] = []
     if not has_member(archive, "calendar.txt"):
         warnings.append(
@@ -107,6 +115,15 @@ def _build_warnings(archive: zipfile.ZipFile) -> tuple[tuple[str, str, str], ...
                 "feed_info_missing",
                 "feed_info.txt",
                 "feed_info.txt is absent; source version metadata is unavailable.",
+            )
+        )
+    if orphan_stop_time_count:
+        warnings.append(
+            (
+                "orphan_stop_time_reference",
+                "stop_times.txt",
+                f"{orphan_stop_time_count} stop-time records reference a stop "
+                "missing from stops.txt.",
             )
         )
     return tuple(warnings)

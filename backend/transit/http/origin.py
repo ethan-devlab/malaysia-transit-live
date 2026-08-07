@@ -12,13 +12,17 @@ PUBLIC_HEALTH_PATH = "/api/v1/healthz"
 
 
 class WorkerOriginVerificationMiddleware:
-    """Reject direct Railway API access that did not pass through the edge Worker."""
+    """Reject direct public API access unless the loopback-only profile is active."""
 
     def __init__(self, get_response: object) -> None:
         self._get_response = get_response
 
     def __call__(self, request: HttpRequest) -> object:
-        if settings.DEBUG or request.path == PUBLIC_HEALTH_PATH or not _is_public_api(request.path):
+        if (
+            settings.LOCAL_ONLY
+            or request.path == PUBLIC_HEALTH_PATH
+            or not _is_public_api(request.path)
+        ):
             return self._get_response(request)
 
         expected_secret = settings.WORKER_ORIGIN_SECRET
@@ -31,4 +35,4 @@ class WorkerOriginVerificationMiddleware:
 
 
 def _is_public_api(path: str) -> bool:
-    return path.startswith(("/api/", "/stream/"))
+    return path.startswith(("/admin/", "/api/", "/stream/"))

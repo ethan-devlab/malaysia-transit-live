@@ -1,0 +1,229 @@
+name: malaysia-transit-local
+
+x-backend-environment: &backend-environment
+  DJANGO_DEBUG: "false"
+  DJANGO_LOCAL_ONLY: "true"
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  REDIS_URL: redis://redis:6379/0
+  TRANSIT_ARCHIVE_BACKEND: filesystem
+  TRANSIT_ARCHIVE_DIRECTORY: /var/lib/transit/archives
+
+x-backend-service: &backend-service
+  build:
+    context: ./backend
+    dockerfile: Dockerfile.local
+  environment: *backend-environment
+  cap_drop:
+    - ALL
+  logging:
+    options:
+      max-file: "3"
+      max-size: 10m
+  read_only: true
+  restart: on-failure:3
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp
+
+services:
+  postgres:
+    image: postgres:17.5-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging:
+      options:
+        max-file: "3"
+        max-size: 10m
+    mem_limit: 1536m
+    networks:
+      - transit-backend
+    restart: on-failure:3
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 128mb
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8.2.1-bookworm
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    logging:
+      options:
+        max-file: "3"
+        max-size: 10m
+    mem_limit: 256m
+    networks:
+      - transit-backend
+    restart: on-failure:3
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - redis-data:/data
+
+  init:
+    <<: *backend-service
+    command:
+      ["/bin/sh", "-c", "/app/.venv/bin/python manage.py migrate --noinput && /app/.venv/bin/python manage.py bootstrap_local"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    mem_limit: 512m
+    networks:
+      - transit-backend
+    restart: "no"
+
+  api:
+    <<: *backend-service
+    command: ["/app/.venv/bin/uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/v1/healthz', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    mem_limit: 512m
+    networks:
+      - transit-backend
+
+  worker:
+    <<: *backend-service
+    command: ["/app/.venv/bin/celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment:
+      <<: *backend-environment
+      HTTP_PROXY: http://egress-proxy:8888
+      HTTPS_PROXY: http://egress-proxy:8888
+      NO_PROXY: api,beat,egress-proxy,init,localhost,postgres,redis,worker,127.0.0.1
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "/app/.venv/bin/celery -A config inspect ping --destination=celery@$$HOSTNAME --timeout=5 | grep -q pong"]
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 15s
+    mem_limit: 2g
+    networks:
+      - transit-backend
+    volumes:
+      - ./local-data/archives:/var/lib/transit/archives
+
+  beat:
+    <<: *backend-service
+    command: ["/app/.venv/bin/celery", "-A", "config", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/celerybeat-schedule"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    mem_limit: 384m
+    networks:
+      - transit-backend
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/web.Dockerfile
+      args:
+        VITE_MAPTILER_KEY: ${VITE_MAPTILER_KEY}
+    cap_drop:
+      - ALL
+    depends_on:
+      api:
+        condition: service_healthy
+      beat:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    logging:
+      options:
+        max-file: "3"
+        max-size: 10m
+    mem_limit: 256m
+    network_mode: service:egress-proxy
+    read_only: true
+    restart: on-failure:3
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+
+  egress-proxy:
+    build:
+      context: ./infra
+      dockerfile: egress-proxy.Dockerfile
+    cap_add:
+      - NET_ADMIN
+      - SETGID
+      - SETUID
+    cap_drop:
+      - ALL
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8888), 2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    logging:
+      options:
+        max-file: "3"
+        max-size: 10m
+    mem_limit: 128m
+    networks:
+      - transit-backend
+      - transit-egress
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    restart: on-failure:3
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+
+networks:
+  transit-backend:
+    driver: bridge
+    internal: true
+  transit-egress:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:

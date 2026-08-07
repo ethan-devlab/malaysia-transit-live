@@ -27,6 +27,12 @@ export interface TransitJourney {
   readonly vehicle?: VehiclePosition
 }
 
+export interface NetworkFocus {
+  readonly id: string
+  readonly kind: "journey" | "vehicle"
+  readonly revision: number
+}
+
 export const modeLabels: Readonly<Record<TransitMode, string>> = {
   bus: "Bus",
   lrt: "LRT",

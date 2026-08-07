@@ -15,6 +15,8 @@ router = Router()
 
 LIVE_FRESHNESS_SECONDS = 90
 VEHICLE_RETENTION_SECONDS = 15 * 60
+VEHICLE_SNAPSHOT_LIMIT = 100
+VEHICLE_SNAPSHOT_PER_FEED_LIMIT = 7
 
 
 @router.get("/data-status", response=list[DataStatus])
@@ -25,22 +27,28 @@ def data_status(request: object) -> list[DataStatus]:
         version.feed_id: version for version in active_versions().only("id", "feed_id")
     }
     latest_fetches = _latest_successful_fetches()
-    return [
-        DataStatus(
-            feed=feed.slug,
-            static_state="active"
-            if (version := active_versions_by_feed.get(feed.id))
-            else "unavailable",
-            active_version_id=str(version.id) if version else None,
-            last_successful_static_fetch_at=latest_fetches.get(
-                (feed.id, UpstreamFetchAttempt.Kind.STATIC),
-            ),
-            last_successful_realtime_fetch_at=latest_fetches.get(
-                (feed.id, UpstreamFetchAttempt.Kind.REALTIME),
+    statuses: list[DataStatus] = []
+    for feed in TransitFeed.objects.all():
+        version = active_versions_by_feed.get(feed.id)
+        statuses.append(
+            DataStatus(
+                feed=feed.slug,
+                static_state="active" if version else "unavailable",
+                realtime_state=_realtime_state(
+                    feed,
+                    has_active_static_version=version is not None,
+                    latest_fetches=latest_fetches,
+                ),
+                active_version_id=str(version.id) if version else None,
+                last_successful_static_fetch_at=latest_fetches.get(
+                    (feed.id, UpstreamFetchAttempt.Kind.STATIC),
+                ),
+                last_successful_realtime_fetch_at=latest_fetches.get(
+                    (feed.id, UpstreamFetchAttempt.Kind.REALTIME),
+                ),
             ),
         )
-        for feed in TransitFeed.objects.all()
-    ]
+    return statuses
 
 
 @router.get("/vehicles", response=list[VehicleLocation])
@@ -52,16 +60,45 @@ def vehicle_locations(
     """Return retained, reference-validated positions with explicit freshness state."""
     del request
     now = timezone.now()
+    return [
+        vehicle_location(snapshot, now)
+        for snapshot in _recent_validated_vehicle_snapshots(now, feed=feed, limit=limit)
+    ]
+
+
+def _recent_validated_vehicle_snapshots(
+    now: datetime,
+    *,
+    feed: str | None = None,
+    limit: int = VEHICLE_SNAPSHOT_LIMIT,
+) -> list[VehicleSnapshot]:
+    capped_limit = max(1, min(limit, VEHICLE_SNAPSHOT_LIMIT))
     snapshots = VehicleSnapshot.objects.filter(
         validation_state=VehicleSnapshot.ValidationState.VALIDATED,
         fetched_at__gte=now - timedelta(seconds=VEHICLE_RETENTION_SECONDS),
     ).select_related("feed", "feed_version")
     if feed:
-        snapshots = snapshots.filter(feed__slug=feed)
-    return [
-        vehicle_location(snapshot, now)
-        for snapshot in snapshots.order_by("-fetched_at")[: max(1, min(limit, 100))]
-    ]
+        return list(
+            snapshots.filter(feed__slug=feed).order_by("-fetched_at", "vehicle_id")[:capped_limit],
+        )
+
+    selected: list[VehicleSnapshot] = []
+    per_feed_counts: dict[int, int] = {}
+    ordered_snapshots = snapshots.order_by(
+        "-feed__realtime_priority",
+        "feed__slug",
+        "-fetched_at",
+        "vehicle_id",
+    )
+    for snapshot in ordered_snapshots.iterator(chunk_size=500):
+        count = per_feed_counts.get(snapshot.feed_id, 0)
+        if count >= VEHICLE_SNAPSHOT_PER_FEED_LIMIT:
+            continue
+        per_feed_counts[snapshot.feed_id] = count + 1
+        selected.append(snapshot)
+        if len(selected) >= capped_limit:
+            break
+    return selected[:capped_limit]
 
 
 def vehicle_location(snapshot: VehicleSnapshot, now: datetime) -> VehicleLocation:
@@ -94,7 +131,10 @@ def vehicle_location(snapshot: VehicleSnapshot, now: datetime) -> VehicleLocatio
 def _latest_successful_fetches() -> dict[tuple[int, str], datetime]:
     """Collect each feed/kind timestamp once rather than issuing per-feed lookup queries."""
     attempts = (
-        UpstreamFetchAttempt.objects.filter(succeeded=True)
+        UpstreamFetchAttempt.objects.filter(
+            succeeded=True,
+            completed_at__gte=timezone.now() - timedelta(days=7),
+        )
         .order_by("feed_id", "kind", "-completed_at")
         .values_list("feed_id", "kind", "completed_at")
     )
@@ -102,3 +142,18 @@ def _latest_successful_fetches() -> dict[tuple[int, str], datetime]:
     for feed_id, kind, completed_at in attempts:
         latest.setdefault((feed_id, kind), completed_at)
     return latest
+
+
+def _realtime_state(
+    feed: TransitFeed,
+    *,
+    has_active_static_version: bool,
+    latest_fetches: dict[tuple[int, str], datetime],
+) -> str:
+    if not has_active_static_version:
+        return "unavailable"
+    if not feed.is_realtime_enabled or not feed.realtime_source_url:
+        return "scheduled_only"
+    if (feed.id, UpstreamFetchAttempt.Kind.REALTIME) in latest_fetches:
+        return "available"
+    return "awaiting_first_fetch"

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from django.db.models import Q
+from django.utils import timezone
 from ninja import Router
 from ninja.errors import HttpError
 
@@ -14,21 +15,33 @@ from transit.http.api_common import (
     route_search_item,
     stop_search_item,
 )
+from transit.http.journeys_api import _matching_scheduled_journeys
 from transit.http.query_helpers import active_versions, is_service_scheduled, source_metadata
-from transit.http.schemas import RouteDetail, SearchResponse, StopDetail, TripDetail, TripStop
-from transit.models import GtfsRoute, GtfsService, GtfsStop, GtfsStopTime, GtfsTrip
+from transit.http.schemas import (
+    RouteDetail,
+    SearchResponse,
+    StopDetail,
+    TripDetail,
+    TripStop,
+    VehicleLocation,
+)
+from transit.http.status_api import VEHICLE_RETENTION_SECONDS, vehicle_location
+from transit.models import GtfsRoute, GtfsService, GtfsStop, GtfsStopTime, GtfsTrip, VehicleSnapshot
 
 router = Router()
 MINIMUM_SEARCH_LENGTH = 2
+MAXIMUM_SEARCH_LENGTH = 120
 
 
 @router.get("/search", response=SearchResponse)
 def search_network(request: object, q: str, limit: int = 20) -> SearchResponse:
-    """Search active routes and stops without mixing historical static versions."""
+    """Search active schedules, network records, and validated positions by one term."""
     del request
     query = q.strip()
     if len(query) < MINIMUM_SEARCH_LENGTH:
         raise HttpError(400, "Search query must be at least two characters.")
+    if len(query) > MAXIMUM_SEARCH_LENGTH:
+        raise HttpError(400, "Search query must be at most 120 characters.")
     result_limit = max(1, min(limit, 50))
     route_filter = Q(short_name__icontains=query) | Q(long_name__icontains=query)
     routes = (
@@ -43,9 +56,32 @@ def search_network(request: object, q: str, limit: int = 20) -> SearchResponse:
     )
     return SearchResponse(
         query=query,
+        journeys=_matching_scheduled_journeys(query, timezone.localdate(), result_limit),
         routes=[route_search_item(route) for route in routes],
         stops=[stop_search_item(stop) for stop in stops],
+        vehicles=_matching_vehicle_locations(query, result_limit),
     )
+
+
+def _matching_vehicle_locations(query: str, result_limit: int) -> list[VehicleLocation]:
+    now = timezone.now()
+    snapshot_filter = (
+        Q(vehicle_id__icontains=query)
+        | Q(route_id__icontains=query)
+        | Q(trip_id__icontains=query)
+        | Q(feed__slug__icontains=query)
+        | Q(feed__display_name__icontains=query)
+    )
+    snapshots = (
+        VehicleSnapshot.objects.filter(
+            validation_state=VehicleSnapshot.ValidationState.VALIDATED,
+            fetched_at__gte=now - timedelta(seconds=VEHICLE_RETENTION_SECONDS),
+        )
+        .filter(snapshot_filter)
+        .select_related("feed", "feed_version")
+        .order_by("-fetched_at", "feed__slug", "vehicle_id")[:result_limit]
+    )
+    return [vehicle_location(snapshot, now) for snapshot in snapshots]
 
 
 @router.get("/routes/{feed_slug}/{route_id}", response=RouteDetail)
@@ -62,7 +98,7 @@ def route_detail(request: object, feed_slug: str, route_id: str) -> RouteDetail:
         short_name=route.short_name,
         long_name=route.long_name,
         description=route.description,
-        mode=route_mode(route.route_type),
+        mode=route_mode(route.route_type, route.feed_version.feed.slug),
         source=source_metadata(feed, version),
     )
 
@@ -102,12 +138,13 @@ def trip_detail(
     except (GtfsService.DoesNotExist, GtfsTrip.DoesNotExist) as error:
         raise HttpError(404, "Trip not found in the active static version.") from error
     stop_times = list(GtfsStopTime.objects.filter(trip=trip).order_by("stop_sequence"))
-    stop_names = dict(
-        GtfsStop.objects.filter(
+    stops_by_id = {
+        stop_id: (name, float(latitude), float(longitude))
+        for stop_id, name, latitude, longitude in GtfsStop.objects.filter(
             feed_version=version,
             stop_id__in=[stop_time.stop_id for stop_time in stop_times],
-        ).values_list("stop_id", "name"),
-    )
+        ).values_list("stop_id", "name", "latitude", "longitude")
+    }
     return TripDetail(
         trip_id=trip.trip_id,
         route_id=trip.route_id,
@@ -118,7 +155,9 @@ def trip_detail(
             TripStop(
                 sequence=stop_time.stop_sequence,
                 stop_id=stop_time.stop_id,
-                name=stop_names.get(stop_time.stop_id, stop_time.stop_id),
+                name=stops_by_id.get(stop_time.stop_id, (stop_time.stop_id, None, None))[0],
+                latitude=stops_by_id.get(stop_time.stop_id, ("", None, None))[1],
+                longitude=stops_by_id.get(stop_time.stop_id, ("", None, None))[2],
                 arrival_time=stop_time.arrival_time,
                 departure_time=stop_time.departure_time,
             )

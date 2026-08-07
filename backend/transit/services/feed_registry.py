@@ -20,6 +20,54 @@ class FeedDefinition:
     static_source_url: str
     realtime_source_url: str = ""
     realtime_priority: int = 0
+    operator_key: str = ""
+    operator_name: str = ""
+    region_key: str = ""
+    region_name: str = ""
+
+    def __post_init__(self) -> None:
+        metadata = _dashboard_metadata(self.slug, self.display_name)
+        for field_name, value in metadata.items():
+            if not getattr(self, field_name):
+                object.__setattr__(self, field_name, value)
+
+
+def _dashboard_metadata(slug: str, display_name: str) -> dict[str, str]:
+    if slug == "ktmb":
+        return {
+            "operator_key": "ktmb",
+            "operator_name": "KTMB",
+            "region_key": "national",
+            "region_name": "Malaysia",
+        }
+    if slug.startswith("rapid-"):
+        region_key = "kuala-lumpur"
+        if "penang" in slug:
+            region_key = "penang"
+        elif "kuantan" in slug:
+            region_key = "kuantan"
+        region_name = {"penang": "Penang", "kuantan": "Kuantan", "kuala-lumpur": "Kuala Lumpur"}[region_key]
+        operator_key = {"penang": "rapid-penang", "kuantan": "rapid-kuantan", "kuala-lumpur": "rapid-kl"}[region_key]
+        operator_name = {"penang": "Rapid Penang", "kuantan": "Rapid Kuantan", "kuala-lumpur": "Rapid KL"}[region_key]
+        return {
+            "operator_key": operator_key,
+            "operator_name": operator_name,
+            "region_key": region_key,
+            "region_name": region_name,
+        }
+    if slug.startswith("mybas-"):
+        return {
+            "operator_key": "bas-my",
+            "operator_name": "BAS.MY",
+            "region_key": slug.removeprefix("mybas-"),
+            "region_name": display_name.removeprefix("BAS.MY "),
+        }
+    return {
+        "operator_key": slug,
+        "operator_name": display_name,
+        "region_key": "unknown",
+        "region_name": "Unclassified",
+    }
 
 
 OFFICIAL_FEEDS: Final[tuple[FeedDefinition, ...]] = (
@@ -136,6 +184,10 @@ def ensure_official_feed_registry() -> list[TransitFeed]:
                 "realtime_source_url": definition.realtime_source_url,
                 "realtime_priority": definition.realtime_priority,
                 "is_realtime_enabled": bool(definition.realtime_source_url),
+                "operator_key": definition.operator_key,
+                "operator_name": definition.operator_name,
+                "region_key": definition.region_key,
+                "region_name": definition.region_name,
             },
         )
         feeds.append(feed)

@@ -6,7 +6,7 @@ from datetime import time
 from typing import Final
 
 _GTFS_TIME_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"^(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})$"
+    r"^(?P<hour>\d{1,2}):(?P<minute>\d{2}):(?P<second>\d{2})$"
 )
 _MAX_GTFS_HOUR: Final = 47
 
@@ -33,10 +33,10 @@ class GtfsTimeParseError(Exception):
 
 
 def parse_gtfs_time(raw_value: str) -> GtfsTime:
-    """Parse an HH:MM:SS GTFS value, including valid times after midnight."""
+    """Parse an H:MM:SS or HH:MM:SS GTFS value, including times after midnight."""
     matched_time = _GTFS_TIME_PATTERN.fullmatch(raw_value)
     if matched_time is None:
-        raise GtfsTimeParseError(raw_value=raw_value, reason="expected HH:MM:SS")
+        raise GtfsTimeParseError(raw_value=raw_value, reason="expected H:MM:SS or HH:MM:SS")
 
     hour = int(matched_time.group("hour"))
     minute = int(matched_time.group("minute"))

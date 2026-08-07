@@ -10,8 +10,10 @@ const sourceSchema = z.object({
 const dataStatusSchema = z.object({
   feed: z.string(),
   static_state: z.enum(["active", "unavailable"]),
+  realtime_state: z.enum(["available", "awaiting_first_fetch", "scheduled_only", "unavailable"]),
   active_version_id: z.string().nullable(),
   last_successful_static_fetch_at: z.string().datetime().nullable(),
+  last_successful_realtime_fetch_at: z.string().datetime().nullable(),
 })
 
 const scheduledJourneySchema = z.object({
@@ -45,6 +47,44 @@ const vehicleLocationSchema = z.object({
   static_version_id: z.string().nullable(),
 })
 
+const routeSearchItemSchema = z.object({
+  kind: z.literal("route"),
+  route_id: z.string(),
+  label: z.string(),
+  name: z.string(),
+  mode: z.string(),
+  source: sourceSchema,
+})
+
+const stopSearchItemSchema = z.object({
+  kind: z.literal("stop"),
+  stop_id: z.string(),
+  name: z.string(),
+  latitude: z.number(),
+  longitude: z.number(),
+  source: sourceSchema,
+})
+
+const tripStopSchema = z.object({
+  sequence: z.number().int().nonnegative(),
+  stop_id: z.string(),
+  name: z.string(),
+  latitude: z.number().nullable(),
+  longitude: z.number().nullable(),
+  arrival_time: z.string(),
+  departure_time: z.string(),
+})
+
+const tripDetailSchema = z.object({
+  trip_id: z.string(),
+  route_id: z.string(),
+  headsign: z.string(),
+  service_date: z.string().date(),
+  is_scheduled: z.boolean(),
+  stops: z.array(tripStopSchema),
+  source: sourceSchema,
+})
+
 const dataStatusesSchema = z.array(dataStatusSchema)
 const scheduledJourneysSchema = z.array(scheduledJourneySchema)
 const vehicleLocationsSchema = z.array(vehicleLocationSchema)
@@ -52,10 +92,19 @@ const vehicleSnapshotSchema = z.object({
   generated_at: z.string().datetime(),
   vehicles: vehicleLocationsSchema,
 })
+const networkSearchSchema = z.object({
+  query: z.string(),
+  journeys: scheduledJourneysSchema,
+  routes: z.array(routeSearchItemSchema),
+  stops: z.array(stopSearchItemSchema),
+  vehicles: vehicleLocationsSchema,
+})
 
 export type DataStatus = z.infer<typeof dataStatusSchema>
 export type ScheduledJourney = z.infer<typeof scheduledJourneySchema>
 export type VehicleLocation = z.infer<typeof vehicleLocationSchema>
+export type TripDetail = z.infer<typeof tripDetailSchema>
+export type NetworkSearch = z.infer<typeof networkSearchSchema>
 
 class TransitApiError extends Error {
   readonly status: number
@@ -96,6 +145,38 @@ export async function fetchVehicleLocations(
   }
   const payload: unknown = await response.json()
   return vehicleLocationsSchema.parse(payload)
+}
+
+export async function fetchNetworkSearch(
+  query: string,
+  signal?: AbortSignal,
+): Promise<NetworkSearch> {
+  const response = await fetch(
+    `/api/v1/search?q=${encodeURIComponent(query)}&limit=20`,
+    requestOptions(signal),
+  )
+  if (!response.ok) {
+    throw new TransitApiError(response.status)
+  }
+  const payload: unknown = await response.json()
+  return networkSearchSchema.parse(payload)
+}
+
+export async function fetchTripDetail(
+  feed: string,
+  tripId: string,
+  serviceDate: string,
+  signal?: AbortSignal,
+): Promise<TripDetail> {
+  const response = await fetch(
+    `/api/v1/trips/${encodeURIComponent(feed)}/${encodeURIComponent(tripId)}?service_date=${encodeURIComponent(serviceDate)}`,
+    requestOptions(signal),
+  )
+  if (!response.ok) {
+    throw new TransitApiError(response.status)
+  }
+  const payload: unknown = await response.json()
+  return tripDetailSchema.parse(payload)
 }
 
 export function parseVehicleSnapshot(payload: string): readonly VehicleLocation[] {

@@ -99,10 +99,11 @@ Use shadcn/ui primitives first. Use `@phosphor-icons/react` for SVG icons; set i
 
 ### CommandSearch
 
-- **Structure:** labelled input, mode/feed filters, result list, empty and error message.
+- **Structure:** labelled input, mode/feed filters, result list, empty and error message. Results group scheduled trips, static routes, stops, and validated live vehicles without conflating their freshness states.
 - **Variants:** header compact, page large, keyboard-invoked overlay.
 - **States:** idle, typing, loading, results, no match, partial static coverage, request error.
 - **Accessibility:** native input semantics, listbox only where keyboard selection is implemented, result count announced without verbose live-region spam.
+- **Interaction:** selecting a scheduled trip makes it the map focus; selecting a vehicle makes that vehicle the map focus. Each action replaces the prior focus so a route-card action always remains effective after a vehicle selection.
 
 ### ServiceJourneyCard
 
@@ -129,12 +130,40 @@ Use shadcn/ui primitives first. Use `@phosphor-icons/react` for SVG icons; set i
 - **Variants:** route shape, vehicle cluster, selected vehicle, no-live-data.
 - **States:** loading tiles, loading vehicles, map unavailable, WebGL unavailable, reduced-data fallback.
 - **Accessibility:** offer “View as list”; markers are not the sole control surface. A selected marker opens the same detail panel as its list row.
+- **Commuter context:** selected vehicles show their current coordinates and next **scheduled** stop with planned time. This is never labelled as an ETA because upstream realtime data supplies positions, not arrival predictions.
 
 ### FilterPanel and LocalFavourite
 
 - **Structure:** shadcn Sheet/Popover controls with feed, mode, date, and map visibility selectors; favourite toggle uses local browser storage only.
 - **States:** default, selected, disabled, loading, persistence denied.
 - **Accessibility:** Escape closes overlays, focus returns to trigger, every icon button has a text label for assistive technology.
+
+### Dashboard workspaces
+
+The AppShell exposes two switchable, URL-addressable workspaces that share one
+cascading single-select filter row: mode → canonical operator → city/metro region.
+Each select keeps an “All” option, clears child filters when its parent changes, and
+has an inline no-results state.
+
+- **Network overview:** summary counts, MapLibre vehicle context, an equivalent
+  keyboard-accessible list, and selected-vehicle detail. Detail shows coordinates,
+  route/trip, GTFS agency, freshness label, and the next timetable stop; it never says
+  ETA. `Verified live`, `Live feed stale`, `Scheduled only`, and `Source unavailable`
+  always include text and semantic status treatment.
+- **Service health:** dense sortable table with feed, canonical operator, city, agency,
+  normalized modes, static/realtime state, last successful fetch, and live/stale/
+  unclassified vehicle counts. Scheduled-only, awaiting-first-fetch, and unavailable
+  use distinct labelled status treatments.
+- **Responsive behavior:** 375px and 768px stack the workspaces and expose a map/list
+  switcher; the 1280px layout uses a 12-column split. A safety-cap notice offers
+  “Load more vehicles”. Errors, empty data, partial coverage, SSE interruption, and
+  map/WebGL failure use inline notices rather than modal-first recovery.
+
+The product is read-only and public. Preserve Civic signal palette, IBM Plex, existing
+light/dark/system tokens, tinted surfaces, hairline borders, 0–4px radii, and 44px
+touch targets. Do not add purple, gradients, glassmorphism, decorative motion, nested
+cards, or side-stripe vehicle controls. Motion is limited to transform/opacity at
+150–220ms and disabled for reduced-motion users.
 
 ## 6. Motion & Interaction
 

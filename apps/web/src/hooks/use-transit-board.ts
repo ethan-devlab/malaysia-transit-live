@@ -4,15 +4,29 @@ import { useMemo } from "react"
 import { previewJourneys } from "@/data/previewTransit"
 import type { TransitJourney, TransitMode } from "@/domain/transit"
 import { useLiveVehicles } from "@/hooks/use-live-vehicles"
-import { fetchDataStatus, fetchScheduledJourneys, type ScheduledJourney } from "@/lib/transit-api"
+import {
+  type DataStatus,
+  fetchDataStatus,
+  fetchScheduledJourneys,
+  type ScheduledJourney,
+  type VehicleLocation,
+} from "@/lib/transit-api"
 
 export type BoardDataState = "loading" | "preview" | "ready" | "unavailable"
 
 export interface TransitBoardData {
   readonly journeys: readonly TransitJourney[]
+  readonly realtime: RealtimeCoverage
   readonly vehicles: readonly ValidatedVehicle[]
   readonly serviceDate: string
   readonly state: BoardDataState
+}
+
+export interface RealtimeCoverage {
+  readonly availableFeedCount: number
+  readonly awaitingFirstFetchCount: number
+  readonly scheduledOnlyFeedCount: number
+  readonly validatedVehicleCount: number
 }
 
 export interface ValidatedVehicle {
@@ -22,6 +36,7 @@ export interface ValidatedVehicle {
   readonly label: string
   readonly latitude: number
   readonly longitude: number
+  readonly routeId: string
   readonly tripId: string
   readonly updatedAt: string
 }
@@ -51,20 +66,7 @@ export function useTransitBoard(): TransitBoardData {
     refetchInterval: 60_000,
   })
   const vehicles = useLiveVehicles(apiEnabled && hasActiveStaticVersion === true)
-  const validatedVehicles = useMemo(
-    () =>
-      vehicles.map((vehicle) => ({
-        feed: vehicle.feed,
-        freshness: vehicle.freshness,
-        id: `${vehicle.feed}:${vehicle.vehicle_id}`,
-        label: `Vehicle ${vehicle.vehicle_id}`,
-        latitude: vehicle.latitude,
-        longitude: vehicle.longitude,
-        tripId: vehicle.trip_id,
-        updatedAt: vehicle.fetched_at,
-      })),
-    [vehicles],
-  )
+  const validatedVehicles = useMemo(() => vehicles.map(toValidatedVehicle), [vehicles])
   const vehicleByTrip = useMemo(
     () =>
       new Map(
@@ -78,10 +80,15 @@ export function useTransitBoard(): TransitBoardData {
     () => (journeyQuery.data ?? []).map((journey) => toTransitJourney(journey, vehicleByTrip)),
     [journeyQuery.data, vehicleByTrip],
   )
+  const realtime = useMemo(
+    () => realtimeCoverage(validatedVehicles, statusQuery.data ?? []),
+    [statusQuery.data, validatedVehicles],
+  )
 
   if (hasActiveStaticVersion && journeyQuery.isPending) {
     return {
       journeys: [],
+      realtime,
       vehicles: [],
       serviceDate: todayDisplayDate(),
       state: "loading",
@@ -90,6 +97,7 @@ export function useTransitBoard(): TransitBoardData {
   if (hasActiveStaticVersion && !journeyQuery.isError) {
     return {
       journeys: apiJourneys,
+      realtime,
       vehicles: validatedVehicles,
       serviceDate: apiJourneys.at(0)?.serviceDate ?? todayDisplayDate(),
       state: "ready",
@@ -98,6 +106,7 @@ export function useTransitBoard(): TransitBoardData {
   if (!apiEnabled && hasActiveStaticVersion !== true) {
     return {
       journeys: previewJourneys,
+      realtime,
       vehicles: [],
       serviceDate: previewJourneys.at(0)?.serviceDate ?? todayDisplayDate(),
       state: "preview",
@@ -105,13 +114,43 @@ export function useTransitBoard(): TransitBoardData {
   }
   return {
     journeys: [],
+    realtime,
     vehicles: [],
     serviceDate: todayDisplayDate(),
     state: statusQuery.isPending ? "loading" : "unavailable",
   }
 }
 
-function toTransitJourney(
+export function toValidatedVehicle(vehicle: VehicleLocation): ValidatedVehicle {
+  return {
+    feed: vehicle.feed,
+    freshness: vehicle.freshness,
+    id: `${vehicle.feed}:${vehicle.vehicle_id}`,
+    label: `Vehicle ${vehicle.vehicle_id}`,
+    latitude: vehicle.latitude,
+    longitude: vehicle.longitude,
+    routeId: vehicle.route_id,
+    tripId: vehicle.trip_id,
+    updatedAt: vehicle.fetched_at,
+  }
+}
+
+function realtimeCoverage(
+  vehicles: readonly ValidatedVehicle[],
+  statuses: readonly DataStatus[],
+): RealtimeCoverage {
+  return {
+    availableFeedCount: statuses.filter((status) => status.realtime_state === "available").length,
+    awaitingFirstFetchCount: statuses.filter(
+      (status) => status.realtime_state === "awaiting_first_fetch",
+    ).length,
+    scheduledOnlyFeedCount: statuses.filter((status) => status.realtime_state === "scheduled_only")
+      .length,
+    validatedVehicleCount: vehicles.length,
+  }
+}
+
+export function toTransitJourney(
   journey: ScheduledJourney,
   vehicleByTrip: ReadonlyMap<string, ValidatedVehicle>,
 ): TransitJourney {
@@ -122,7 +161,7 @@ function toTransitJourney(
     feedId: journey.feed,
     freshness: vehicle?.freshness ?? "scheduled",
     id: `${journey.feed}:${journey.trip_id}`,
-    mode: apiModeToTransitMode(journey.mode),
+    mode: apiModeToTransitMode(journey.mode, journey.route_name),
     origin: journey.origin,
     plannedEnd: journey.planned_end,
     plannedStart: journey.planned_start,
@@ -157,7 +196,7 @@ function formatFreshnessAge(updatedAt: string): string {
   return `${Math.floor(ageSeconds / 3_600)}h`
 }
 
-function apiModeToTransitMode(mode: string): TransitMode {
+function apiModeToTransitMode(mode: string, routeName: string): TransitMode {
   switch (mode) {
     case "bus":
       return "bus"
@@ -166,7 +205,10 @@ function apiModeToTransitMode(mode: string): TransitMode {
     case "rail":
       return "rail"
     case "metro":
-      return "mrt"
+      if (/\bMONORAIL\b/i.test(routeName)) {
+        return "monorail"
+      }
+      return /\b(?:LRT|BRT)\b/i.test(routeName) ? "lrt" : "mrt"
     case "tram":
       return "lrt"
     default:

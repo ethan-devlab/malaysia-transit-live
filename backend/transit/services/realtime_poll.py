@@ -82,6 +82,8 @@ def poll_realtime_feed(feed: TransitFeed) -> RealtimePollResult:
         body = _download_realtime_body(feed.realtime_source_url)
         protobuf = gtfs_realtime_pb2.FeedMessage()
         protobuf.ParseFromString(body)
+        if not protobuf.IsInitialized():
+            raise RealtimeFetchError("Official realtime response is missing required fields.")
         accepted, rejected = _store_vehicle_entities(feed, protobuf, timezone.now())
     except UpstreamRateLimitError:
         return RealtimePollResult(feed.slug, 0, 0, "deferred")
@@ -103,8 +105,7 @@ def _download_realtime_body(source_url: str) -> bytes:
     with httpx2.stream(
         "GET",
         source_url,
-        follow_redirects=False,
-        headers={"Accept": "application/x-protobuf, application/octet-stream"},
+        follow_redirects=True,
         timeout=REALTIME_TIMEOUT_SECONDS,
     ) as response:
         if response.status_code != HTTP_OK:
@@ -172,7 +173,7 @@ def _validation_state(
     longitude = vehicle.position.longitude
     if not _is_in_malaysia(latitude, longitude):
         return VehicleSnapshot.ValidationState.OUT_OF_COVERAGE
-    if _has_known_reference(feed_slug, trip_id, route_id, trip_ids, route_ids):
+    if has_known_reference(feed_slug, trip_id, route_id, trip_ids, route_ids):
         return VehicleSnapshot.ValidationState.VALIDATED
     return VehicleSnapshot.ValidationState.ORPHAN_REFERENCE
 
@@ -209,18 +210,19 @@ def _upsert_snapshot(
     )
 
 
-def _has_known_reference(
+def has_known_reference(
     feed_slug: str,
     trip_id: str,
     route_id: str,
     trip_ids: set[str],
     route_ids: set[str],
 ) -> bool:
+    """Recognize exact GTFS IDs and the official Rapid Bus Penang suffix variant."""
     if route_id and route_id in route_ids:
         return True
     if trip_id in trip_ids:
         return True
-    return feed_slug == "rapid-bus-penang" and any(
+    return feed_slug == "rapid-bus-penang" and bool(trip_id) and any(
         static_trip_id.endswith(trip_id) for static_trip_id in trip_ids
     )
 

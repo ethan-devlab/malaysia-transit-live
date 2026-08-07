@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from django.db.models import Q
 from django.utils import timezone
 from ninja import Router
 from ninja.errors import HttpError
@@ -25,6 +26,14 @@ MIN_LATITUDE = -90
 MAX_LATITUDE = 90
 MIN_LONGITUDE = -180
 MAX_LONGITUDE = 180
+ROUTE_SAMPLE_LIMIT = 80
+KL_FIRST_FEED_ORDER = {
+    "rapid-rail-kl": 0,
+    "rapid-bus-kl": 1,
+    "rapid-bus-mrtfeeder": 2,
+    "ktmb": 3,
+}
+PRIORITY_MODES = ("metro", "tram", "monorail", "rail", "bus")
 
 
 @router.get("/journeys", response=list[ScheduledJourney])
@@ -37,13 +46,23 @@ def scheduled_journeys(
     del request
     target_date = service_date or timezone.localdate()
     result_limit = max(1, min(limit, 50))
-    trips = list(
-        GtfsTrip.objects.filter(feed_version__in=active_versions())
-        .select_related("feed_version__feed")
-        .order_by("feed_version__feed__realtime_priority", "route_id", "trip_id")[
-            : result_limit * 8
-        ],
-    )
+    return _journey_cards(_sampled_route_trips(), target_date, result_limit)
+
+
+def _matching_scheduled_journeys(
+    query: str,
+    service_date: date,
+    limit: int,
+) -> list[ScheduledJourney]:
+    result_limit = max(1, min(limit, 50))
+    return _journey_cards(_matching_route_trips(query, result_limit), service_date, result_limit)
+
+
+def _journey_cards(
+    trips: list[GtfsTrip],
+    target_date: date,
+    result_limit: int,
+) -> list[ScheduledJourney]:
     services = {
         (service.feed_version_id, service.service_id): service
         for service in GtfsService.objects.filter(
@@ -61,7 +80,8 @@ def scheduled_journeys(
     stop_times_by_trip = _stop_times_by_trip(trips)
     stop_names = _stop_names(trips, stop_times_by_trip)
 
-    journeys: list[ScheduledJourney] = []
+    candidates: list[ScheduledJourney] = []
+    seen_directions: set[tuple[str, str, str, str]] = set()
     for trip in trips:
         service = services.get((trip.feed_version_id, trip.service_id))
         route = routes.get((trip.feed_version_id, trip.route_id))
@@ -74,12 +94,21 @@ def scheduled_journeys(
         ):
             continue
         first_stop, last_stop = stop_times[0], stop_times[-1]
-        journeys.append(
+        direction_key = (
+            trip.feed_version.feed.slug,
+            route.route_id,
+            first_stop.stop_id,
+            last_stop.stop_id,
+        )
+        if direction_key in seen_directions:
+            continue
+        seen_directions.add(direction_key)
+        candidates.append(
             ScheduledJourney(
                 feed=trip.feed_version.feed.slug,
                 trip_id=trip.trip_id,
                 route_id=trip.route_id,
-                mode=route_mode(route.route_type),
+                mode=route_mode(route.route_type, trip.feed_version.feed.slug),
                 route_label=route.short_name or route.long_name or route.route_id,
                 route_name=route.long_name,
                 origin=stop_names.get(
@@ -97,9 +126,7 @@ def scheduled_journeys(
                 source=source_metadata(trip.feed_version.feed, trip.feed_version),
             ),
         )
-        if len(journeys) == result_limit:
-            break
-    return journeys
+    return _select_diverse_journeys(candidates, result_limit)
 
 
 @router.get("/stops/nearby", response=list[NearbyStop])
@@ -158,6 +185,85 @@ def _stop_times_by_trip(trips: list[GtfsTrip]) -> dict[int, list[GtfsStopTime]]:
     ):
         stop_times_by_trip.setdefault(stop_time.trip_id, []).append(stop_time)
     return stop_times_by_trip
+
+
+def _sampled_route_trips() -> list[GtfsTrip]:
+    versions = sorted(
+        active_versions().select_related("feed"),
+        key=lambda version: (KL_FIRST_FEED_ORDER.get(version.feed.slug, 10), version.feed.slug),
+    )
+    sampled: list[GtfsTrip] = []
+    for version in versions:
+        sampled.extend(
+            GtfsTrip.objects.filter(feed_version=version)
+            .select_related("feed_version__feed")
+            .order_by("route_id", "trip_id")
+            .distinct("route_id")[:ROUTE_SAMPLE_LIMIT],
+        )
+    return sampled
+
+
+def _matching_route_trips(query: str, result_limit: int) -> list[GtfsTrip]:
+    normalized_query = query.strip()
+    matching: list[GtfsTrip] = []
+    versions = sorted(
+        active_versions().select_related("feed"),
+        key=lambda version: (KL_FIRST_FEED_ORDER.get(version.feed.slug, 10), version.feed.slug),
+    )
+    for version in versions:
+        route_ids = list(
+            GtfsRoute.objects.filter(feed_version=version)
+            .filter(
+                Q(short_name__icontains=normalized_query)
+                | Q(long_name__icontains=normalized_query),
+            )
+            .values_list("route_id", flat=True),
+        )
+        stop_ids = list(
+            GtfsStop.objects.filter(feed_version=version)
+            .filter(name__icontains=normalized_query)
+            .values_list("stop_id", flat=True),
+        )
+        stop_trip_ids = GtfsStopTime.objects.filter(
+            trip__feed_version=version,
+            stop_id__in=stop_ids,
+        ).values_list("trip_id", flat=True)
+        trip_filter = (
+            Q(trip_id__icontains=normalized_query)
+            | Q(headsign__icontains=normalized_query)
+            | Q(route_id__in=route_ids)
+            | Q(id__in=stop_trip_ids)
+        )
+        folded_query = normalized_query.casefold()
+        feed_matches_query = (
+            folded_query in version.feed.slug.casefold()
+            or folded_query in version.feed.display_name.casefold()
+        )
+        trips = GtfsTrip.objects.filter(feed_version=version).select_related("feed_version__feed")
+        if not feed_matches_query:
+            trips = trips.filter(trip_filter)
+        matching.extend(trips.order_by("route_id", "trip_id")[:result_limit])
+    return matching
+
+
+def _select_diverse_journeys(
+    candidates: list[ScheduledJourney], result_limit: int
+) -> list[ScheduledJourney]:
+    selected: list[ScheduledJourney] = []
+    selected_ids: set[tuple[str, str]] = set()
+    for mode in PRIORITY_MODES:
+        journey = next((item for item in candidates if item.mode == mode), None)
+        if journey is not None:
+            selected.append(journey)
+            selected_ids.add((journey.feed, journey.trip_id))
+    for journey in candidates:
+        if len(selected) == result_limit:
+            break
+        journey_id = (journey.feed, journey.trip_id)
+        if journey_id not in selected_ids:
+            selected.append(journey)
+            selected_ids.add(journey_id)
+    return selected[:result_limit]
 
 
 def _stop_names(

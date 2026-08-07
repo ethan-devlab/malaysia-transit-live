@@ -2,25 +2,30 @@
 
 from __future__ import annotations
 
+import logging
 import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 import httpx2
+from django.conf import settings
 from django.utils import timezone
 
 from transit.models import TransitFeed, UpstreamFetchAttempt
+from transit.services.archive_store import ArchiveStorageError, ArchiveStore
 from transit.services.feed_registry import ensure_official_feed_registry
-from transit.services.r2_archive import ArchiveUploadError, R2ArchiveStore
 from transit.services.static_import import import_static_gtfs_archive
 from transit.services.static_import.archive import MAX_ARCHIVE_BYTES, inspect_archive
 from transit.services.static_import.contracts import StaticImportError
+from transit.services.static_import.retention import prune_local_static_versions
 from transit.services.upstream_rate_limit import UpstreamRateLimitError, wait_for_upstream_slot
 
 GTFS_ACCEPT_HEADER = "application/zip, application/octet-stream, */*"
 HTTP_OK = 200
+logger = logging.getLogger(__name__)
 
 
 class StaticFetchError(RuntimeError):
@@ -45,7 +50,7 @@ class StaticRefreshResult:
 class StaticFeedRefresher:
     """Refresh official feeds serially so one worker never exceeds 4 requests/minute."""
 
-    def __init__(self, archive_store: R2ArchiveStore) -> None:
+    def __init__(self, archive_store: ArchiveStore) -> None:
         self._archive_store = archive_store
 
     def refresh_all(self, only_feed_slug: str | None = None) -> list[StaticRefreshResult]:
@@ -63,15 +68,19 @@ class StaticFeedRefresher:
         started_at = timezone.now()
         started_monotonic = time.monotonic()
         status_code: int | None = None
+        content_sha256 = ""
+        object_key = ""
         try:
             with tempfile.TemporaryDirectory(prefix=f"gtfs-{feed.slug}-") as directory:
                 archive_path = Path(directory) / "source.zip"
                 status_code = self._download_archive(feed.static_source_url, archive_path)
                 inspection = inspect_archive(archive_path)
-                object_key = _archive_object_key(feed.slug, inspection.content_sha256)
+                content_sha256 = inspection.content_sha256
+                object_key = _archive_object_key(feed.slug, content_sha256)
                 self._archive_store.put_zip(archive_path, object_key)
                 result = import_static_gtfs_archive(feed, archive_path, object_key)
         except (StaticFetchError, StaticImportError) as error:
+            self._discard_archive(object_key)
             self._record_fetch(
                 feed,
                 started_at,
@@ -81,7 +90,8 @@ class StaticFeedRefresher:
                 detail=getattr(error, "detail", "Static refresh failed."),
             )
             return StaticRefreshResult(feed.slug, "failed", detail="Static refresh failed.")
-        except (ArchiveUploadError, OSError):
+        except (ArchiveStorageError, OSError):
+            self._discard_archive(object_key)
             self._record_fetch(
                 feed,
                 started_at,
@@ -92,15 +102,26 @@ class StaticFeedRefresher:
             )
             return StaticRefreshResult(feed.slug, "failed", detail="Static refresh failed.")
 
+        if settings.LOCAL_ONLY:
+            prune_local_static_versions(feed, self._archive_store)
         self._record_fetch(
             feed,
             started_at,
             started_monotonic,
             succeeded=True,
             status_code=status_code,
-            content_sha256=inspection.content_sha256,
+            content_sha256=content_sha256,
         )
         return StaticRefreshResult(feed.slug, "active", version_id=result.version_id)
+
+    def _discard_archive(self, object_key: str) -> None:
+        """Best-effort archive cleanup that never invalidates an active feed version."""
+        if not object_key:
+            return
+        try:
+            self._archive_store.delete_zip(object_key)
+        except ArchiveStorageError:
+            logger.warning("GTFS archive cleanup failed for retained object key %s.", object_key)
 
     def _download_archive(self, source_url: str, destination: Path) -> int:
         try:
@@ -163,4 +184,4 @@ class StaticFeedRefresher:
 
 def _archive_object_key(feed_slug: str, content_sha256: str) -> str:
     date_path = timezone.localdate().strftime("%Y/%m/%d")
-    return f"gtfs-static/{feed_slug}/{date_path}/{content_sha256}.zip"
+    return f"gtfs-static/{feed_slug}/{date_path}/{content_sha256}-{uuid4().hex}.zip"

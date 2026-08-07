@@ -93,12 +93,13 @@ def load_trips(archive: zipfile.ZipFile, version: StaticFeedVersion) -> int:
     return len(trips)
 
 
-def load_stop_times(archive: zipfile.ZipFile, version: StaticFeedVersion) -> int:
-    """Load stop times, retaining times after midnight as service-day seconds."""
+def load_stop_times(archive: zipfile.ZipFile, version: StaticFeedVersion) -> tuple[int, int]:
+    """Load stop times and count records whose optional stop reference is absent."""
     filename = "stop_times.txt"
     trip_ids = dict(GtfsTrip.objects.filter(feed_version=version).values_list("trip_id", "id"))
     stop_ids = set(GtfsStop.objects.filter(feed_version=version).values_list("stop_id", flat=True))
     stop_times: list[GtfsStopTime] = []
+    orphan_stop_time_count = 0
     trip_sequences: set[tuple[str, int]] = set()
     for row_number, row in iter_rows(archive, filename, ("trip_id", "stop_id", "stop_sequence")):
         trip_id = required_text(row, "trip_id", filename, row_number)
@@ -109,7 +110,8 @@ def load_stop_times(archive: zipfile.ZipFile, version: StaticFeedVersion) -> int
                 "invalid_sequence", "stop_sequence cannot be negative.", filename, row_number
             )
         _require_reference(trip_id, set(trip_ids), "trip_id", filename, row_number)
-        _require_reference(stop_id, stop_ids, "stop_id", filename, row_number)
+        if stop_id not in stop_ids:
+            orphan_stop_time_count += 1
         _require_unique(
             (trip_id, sequence), trip_sequences, "trip_id and stop_sequence", filename, row_number
         )
@@ -142,7 +144,7 @@ def load_stop_times(archive: zipfile.ZipFile, version: StaticFeedVersion) -> int
             )
         )
     _bulk_insert(stop_times)
-    return len(stop_times)
+    return len(stop_times), orphan_stop_time_count
 
 
 def _load_calendar(archive: zipfile.ZipFile, version: StaticFeedVersion) -> int:

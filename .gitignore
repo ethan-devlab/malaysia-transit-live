@@ -15,9 +15,16 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.local.example
 *.sqlite3
 artifacts/
 output/
 gtfs_mybas.zip
 gtfs_mybas/
+local-data/
+.pytest-basetemp-dashboard*/
+playwright-web*.log
+.uv-cache/
 *.tsbuildinfo
+/playwright-web*.log
+/.pytest-basetemp-dashboard/

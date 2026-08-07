@@ -1,13 +1,21 @@
 import { CalendarBlank, Crosshair, MagnifyingGlass, Moon, Sun, Train } from "@phosphor-icons/react"
+import { useQuery } from "@tanstack/react-query"
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
-
+import { DashboardWorkspace } from "@/components/dashboard-workspace"
 import { DataAvailabilityNotice } from "@/components/data-availability-notice"
 import { JourneyCard } from "@/components/journey-card"
+import { NetworkSearchResults } from "@/components/network-search-results"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { journeyMatchesSearch, modeLabels, type TransitMode } from "@/domain/transit"
-import { useTransitBoard } from "@/hooks/use-transit-board"
+import {
+  journeyMatchesSearch,
+  modeLabels,
+  type NetworkFocus,
+  type TransitMode,
+} from "@/domain/transit"
+import { toTransitJourney, toValidatedVehicle, useTransitBoard } from "@/hooks/use-transit-board"
+import { fetchNetworkSearch } from "@/lib/transit-api"
 
 type ModeFilter = "all" | TransitMode
 type ThemePreference = "dark" | "light" | "system"
@@ -24,6 +32,7 @@ const modeFilters: readonly { readonly id: ModeFilter; readonly label: string }[
   { id: "all", label: "All services" },
   { id: "mrt", label: "MRT" },
   { id: "lrt", label: "LRT" },
+  { id: "monorail", label: "Monorail" },
   { id: "bus", label: "Bus" },
   { id: "rail", label: "Rail" },
 ]
@@ -69,6 +78,7 @@ export default function App() {
   const [modeFilter, setModeFilter] = useState<ModeFilter>("all")
   const [showNetworkOnMobile, setShowNetworkOnMobile] = useState(false)
   const [selectedJourneyId, setSelectedJourneyId] = useState("")
+  const [networkFocus, setNetworkFocus] = useState<NetworkFocus>()
   const [favouriteIds, setFavouriteIds] = useState<readonly string[]>(readFavourites)
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference)
   const [systemIsDark, setSystemIsDark] = useState(
@@ -77,22 +87,65 @@ export default function App() {
   const board = useTransitBoard()
 
   const isDark = resolveDarkMode(themePreference, systemIsDark)
+  const normalizedSearchQuery = searchQuery.trim()
+  const shouldSearchNetwork = normalizedSearchQuery.length >= 2 && board.state === "ready"
+  const networkSearch = useQuery({
+    enabled: shouldSearchNetwork,
+    queryFn: ({ signal }) => fetchNetworkSearch(normalizedSearchQuery, signal),
+    queryKey: ["network-search", normalizedSearchQuery],
+    staleTime: 15_000,
+  })
+  const searchedVehicles = useMemo(
+    () => (networkSearch.data?.vehicles ?? []).map(toValidatedVehicle),
+    [networkSearch.data],
+  )
+  const mapVehicles = useMemo(() => {
+    const vehiclesById = new Map(board.vehicles.map((vehicle) => [vehicle.id, vehicle]))
+    searchedVehicles.forEach((vehicle) => {
+      vehiclesById.set(vehicle.id, vehicle)
+    })
+    return [...vehiclesById.values()]
+  }, [board.vehicles, searchedVehicles])
+  const vehicleByTrip = useMemo(
+    () =>
+      new Map(
+        mapVehicles
+          .filter((vehicle) => vehicle.tripId.length > 0)
+          .map((vehicle) => [`${vehicle.feed}:${vehicle.tripId}`, vehicle]),
+      ),
+    [mapVehicles],
+  )
+  const searchedJourneys = useMemo(
+    () =>
+      (networkSearch.data?.journeys ?? []).map((journey) =>
+        toTransitJourney(journey, vehicleByTrip),
+      ),
+    [networkSearch.data, vehicleByTrip],
+  )
+  const visibleJourneys = shouldSearchNetwork ? searchedJourneys : board.journeys
   const filteredJourneys = useMemo(
     () =>
-      board.journeys.filter(
+      visibleJourneys.filter(
         (journey) =>
           (modeFilter === "all" || journey.mode === modeFilter) &&
-          journeyMatchesSearch(journey, searchQuery),
+          (shouldSearchNetwork || journeyMatchesSearch(journey, searchQuery)),
       ),
-    [board.journeys, modeFilter, searchQuery],
+    [modeFilter, searchQuery, shouldSearchNetwork, visibleJourneys],
   )
-  const selectedJourney = board.journeys.find((journey) => journey.id === selectedJourneyId)
+  const knownJourneys = useMemo(() => {
+    const journeysById = new Map(board.journeys.map((journey) => [journey.id, journey]))
+    searchedJourneys.forEach((journey) => {
+      journeysById.set(journey.id, journey)
+    })
+    return [...journeysById.values()]
+  }, [board.journeys, searchedJourneys])
+  const selectedJourney = knownJourneys.find((journey) => journey.id === selectedJourneyId)
 
   useEffect(() => {
-    if (!selectedJourneyId || !board.journeys.some((journey) => journey.id === selectedJourneyId)) {
-      setSelectedJourneyId(board.journeys.at(0)?.id ?? "")
+    if (!selectedJourneyId || !knownJourneys.some((journey) => journey.id === selectedJourneyId)) {
+      setSelectedJourneyId(knownJourneys.at(0)?.id ?? "")
     }
-  }, [board.journeys, selectedJourneyId])
+  }, [knownJourneys, selectedJourneyId])
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)")
@@ -163,8 +216,37 @@ export default function App() {
     setThemePreference(isDark ? "light" : "dark")
   }
 
+  function selectJourney(journeyId: string) {
+    setSelectedJourneyId(journeyId)
+    setNetworkFocus((currentFocus) => ({
+      id: journeyId,
+      kind: "journey",
+      revision: (currentFocus?.revision ?? 0) + 1,
+    }))
+    showNetwork()
+  }
+
+  function selectVehicle(vehicleId: string) {
+    setNetworkFocus((currentFocus) => ({
+      id: vehicleId,
+      kind: "vehicle",
+      revision: (currentFocus?.revision ?? 0) + 1,
+    }))
+    showNetwork()
+  }
+
+  function showNetwork() {
+    setShowNetworkOnMobile(true)
+    window.requestAnimationFrame(() => {
+      document.getElementById("network-map-heading")?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      })
+    })
+  }
+
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
       <a
         className="sr-only left-4 top-4 z-50 bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:absolute"
         href="#main-content"
@@ -195,220 +277,263 @@ export default function App() {
           </Button>
         </div>
       </header>
-      <main id="main-content" className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-        <DataAvailabilityNotice state={board.state} />
-
-        <section className="mt-8 grid gap-6 border-b border-border pb-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+      <main
+        id="main-content"
+        className="mx-auto w-full max-w-[90rem] flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8"
+      >
+        <DataAvailabilityNotice realtime={board.realtime} state={board.state} />
+        <DashboardWorkspace isDark={isDark} />
+        {selectedJourney && (
           <div>
-            <p className="font-mono text-xs font-semibold tracking-wide text-primary uppercase">
-              KL / Klang Valley first · Malaysia-wide foundation
-            </p>
-            <h2 className="mt-3 max-w-3xl text-3xl font-semibold tracking-tight sm:text-4xl">
-              Clear service information, without pretending uncertainty is live.
-            </h2>
-            <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">
-              Search routes and stations, compare planned journeys, and read the source freshness
-              before you travel.
-            </p>
-          </div>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 border-l-2 border-primary pl-4 font-mono text-xs text-muted-foreground">
-            <div>
-              <dt>AREA</dt>
-              <dd className="mt-1 font-sans text-sm font-medium text-foreground">KL priority</dd>
-            </div>
-            <div>
-              <dt>SERVICE DATE</dt>
-              <dd className="mt-1 font-sans text-sm font-medium text-foreground">
-                {board.serviceDate}
-              </dd>
-            </div>
-          </dl>
-        </section>
-
-        <section aria-labelledby="search-heading" className="mt-8">
-          <div className="flex items-baseline justify-between gap-4">
-            <div>
-              <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                Find a service
-              </p>
-              <h2 id="search-heading" className="mt-1 text-2xl font-semibold">
-                Search the network
-              </h2>
-            </div>
-            <p className="hidden font-mono text-xs text-muted-foreground sm:block">
-              Press / to search
-            </p>
-          </div>
-          <div className="relative mt-4 max-w-3xl">
-            <MagnifyingGlass
-              aria-hidden="true"
-              className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground"
-              size={21}
-            />
-            <label className="sr-only" htmlFor="network-search">
-              Search route, station, or operator
-            </label>
-            <Input
-              className="rounded-none border-x-0 border-t-0 border-b-2 bg-transparent pl-12 shadow-none focus-visible:ring-0"
-              id="network-search"
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Route, station, or operator"
-              ref={searchInput}
-              type="search"
-              value={searchQuery}
-            />
-          </div>
-          <fieldset className="mt-4 flex flex-wrap gap-2">
-            <legend className="sr-only">Filter services by mode</legend>
-            {modeFilters.map((filter) => (
-              <Button
-                aria-pressed={modeFilter === filter.id}
-                key={filter.id}
-                onClick={() => setModeFilter(filter.id)}
-                type="button"
-                variant={modeFilter === filter.id ? "default" : "outline"}
-              >
-                {filter.id === "all" ? filter.label : modeLabels[filter.id]}
-              </Button>
-            ))}
-          </fieldset>
-        </section>
-
-        <div className="mt-10 grid gap-10 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,0.72fr)]">
-          <section aria-labelledby="service-board-heading">
-            <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-4">
+            <section className="mt-8 grid gap-6 border-b border-border pb-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
               <div>
-                <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                  Service board
+                <p className="font-mono text-xs font-semibold tracking-wide text-primary uppercase">
+                  KL / Klang Valley first · Malaysia-wide foundation
                 </p>
-                <h2 id="service-board-heading" className="mt-1 text-2xl font-semibold">
-                  Planned and verified state
+                <h2 className="mt-3 max-w-3xl text-3xl font-semibold tracking-tight sm:text-4xl">
+                  Clear service information, without pretending uncertainty is live.
                 </h2>
-              </div>
-              <p aria-live="polite" className="text-sm text-muted-foreground">
-                {filteredJourneys.length} matching service{filteredJourneys.length === 1 ? "" : "s"}
-              </p>
-            </div>
-            {board.state === "loading" ? (
-              <div
-                aria-busy="true"
-                aria-label="Loading scheduled services"
-                className="mt-5 grid gap-4 lg:grid-cols-2"
-                role="status"
-              >
-                <Skeleton className="h-96 rounded-sm" />
-                <Skeleton className="h-96 rounded-sm" />
-              </div>
-            ) : filteredJourneys.length > 0 ? (
-              <div className="mt-5 grid gap-4 lg:grid-cols-2">
-                {filteredJourneys.map((journey) => (
-                  <JourneyCard
-                    isFavourite={favouriteIds.includes(journey.id)}
-                    isSelected={journey.id === selectedJourneyId}
-                    journey={journey}
-                    key={journey.id}
-                    onSelect={setSelectedJourneyId}
-                    onToggleFavourite={toggleFavourite}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="mt-5 border border-dashed border-border p-6" role="status">
-                <p className="text-lg font-semibold">No matching service</p>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Try a route label, a station name, or remove a service-mode filter.
+                <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">
+                  Search routes, stops, scheduled trips, operators, and validated vehicle positions
+                  before you travel.
                 </p>
               </div>
-            )}
-          </section>
+              <dl className="grid grid-cols-2 gap-x-6 gap-y-2 border-l-2 border-primary pl-4 font-mono text-xs text-muted-foreground">
+                <div>
+                  <dt>AREA</dt>
+                  <dd className="mt-1 font-sans text-sm font-medium text-foreground">
+                    KL priority
+                  </dd>
+                </div>
+                <div>
+                  <dt>SERVICE DATE</dt>
+                  <dd className="mt-1 font-sans text-sm font-medium text-foreground">
+                    {board.serviceDate}
+                  </dd>
+                </div>
+              </dl>
+            </section>
 
-          <aside className="space-y-6 xl:border-l xl:border-border xl:pl-8">
-            <Button
-              aria-controls="network-map-heading"
-              aria-expanded={showNetworkOnMobile}
-              className="w-full xl:hidden"
-              onClick={() => setShowNetworkOnMobile((isVisible) => !isVisible)}
-              type="button"
-              variant="outline"
+            <section
+              aria-labelledby="search-heading"
+              className="sticky top-0 z-20 -mx-4 mt-8 border-b border-border bg-background px-4 py-4 sm:static sm:mx-0 sm:mt-8 sm:border-b-0 sm:bg-transparent sm:px-0 sm:py-0"
             >
-              {showNetworkOnMobile ? "Hide network view" : "Show network view"}
-            </Button>
-            <div className={showNetworkOnMobile ? undefined : "hidden xl:block"}>
-              <Suspense
-                fallback={
-                  <section aria-busy="true" aria-label="Loading network view" className="space-y-3">
-                    <div>
-                      <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                        KL / Klang Valley first
-                      </p>
-                      <h2 className="mt-1 text-xl font-semibold">Network view</h2>
-                    </div>
-                    <Skeleton className="h-72 rounded-sm sm:h-96" />
-                  </section>
-                }
-              >
-                <NetworkMapPanel isDark={isDark} vehicles={board.vehicles} />
-              </Suspense>
-            </div>
-            {selectedJourney &&
-            filteredJourneys.some((journey) => journey.id === selectedJourney.id) ? (
-              <section
-                aria-labelledby="selected-service-heading"
-                className="border-y border-border py-5"
-              >
-                <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                  Selected service
+              <div className="flex items-baseline justify-between gap-4">
+                <div>
+                  <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                    Find a service
+                  </p>
+                  <h2 id="search-heading" className="mt-1 text-2xl font-semibold">
+                    Search the network
+                  </h2>
+                </div>
+                <p className="hidden font-mono text-xs text-muted-foreground sm:block">
+                  Press / to search
                 </p>
-                <h2 id="selected-service-heading" className="mt-1 text-xl font-semibold">
-                  {selectedJourney.routeLabel} · {selectedJourney.routeName}
-                </h2>
-                <dl className="mt-4 space-y-3 text-sm">
-                  <div className="flex items-start gap-3">
-                    <Crosshair aria-hidden="true" className="mt-0.5 text-primary" />
-                    <div>
-                      <dt className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
-                        Direction
-                      </dt>
-                      <dd className="mt-1">
-                        {selectedJourney.origin} to {selectedJourney.destination}
-                      </dd>
-                    </div>
+              </div>
+              <div className="relative mt-4 max-w-3xl">
+                <MagnifyingGlass
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  size={21}
+                />
+                <label className="sr-only" htmlFor="network-search">
+                  Search route, stop, trip, vehicle, or operator
+                </label>
+                <Input
+                  className="rounded-none border-x-0 border-t-0 border-b-2 bg-transparent pl-12 shadow-none focus-visible:ring-0"
+                  id="network-search"
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Route, stop, trip, vehicle, or operator"
+                  ref={searchInput}
+                  type="search"
+                  value={searchQuery}
+                />
+              </div>
+              <fieldset className="mt-4 flex flex-wrap gap-2">
+                <legend className="sr-only">Filter services by mode</legend>
+                {modeFilters.map((filter) => (
+                  <Button
+                    aria-pressed={modeFilter === filter.id}
+                    key={filter.id}
+                    onClick={() => setModeFilter(filter.id)}
+                    type="button"
+                    variant={modeFilter === filter.id ? "default" : "outline"}
+                  >
+                    {filter.id === "all" ? filter.label : modeLabels[filter.id]}
+                  </Button>
+                ))}
+              </fieldset>
+              <NetworkSearchResults
+                data={networkSearch.data}
+                hasError={networkSearch.isError}
+                isLoading={shouldSearchNetwork && networkSearch.isPending}
+                onSelectJourney={(journey) => selectJourney(`${journey.feed}:${journey.trip_id}`)}
+                onSelectVehicle={(vehicle) =>
+                  selectVehicle(`${vehicle.feed}:${vehicle.vehicle_id}`)
+                }
+                query={searchQuery}
+              />
+            </section>
+
+            <div className="mt-10 grid min-w-0 gap-10 xl:grid-cols-[minmax(0,0.9fr)_minmax(32rem,1.1fr)]">
+              <section aria-labelledby="service-board-heading" className="min-w-0">
+                <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-4">
+                  <div>
+                    <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                      Service board
+                    </p>
+                    <h2 id="service-board-heading" className="mt-1 text-2xl font-semibold">
+                      Planned and verified state
+                    </h2>
                   </div>
-                  <div className="flex items-start gap-3">
-                    <CalendarBlank aria-hidden="true" className="mt-0.5 text-primary" />
-                    <div>
-                      <dt className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
-                        Planned journey
-                      </dt>
-                      <dd className="mt-1">
-                        <time dateTime={selectedJourney.serviceDateIso}>
-                          {selectedJourney.serviceDate}
-                        </time>
-                        ,{" "}
-                        <time
-                          dateTime={`${selectedJourney.serviceDateIso}T${selectedJourney.plannedStart}:00+08:00`}
-                        >
-                          {selectedJourney.plannedStart}
-                        </time>
-                        –
-                        <time
-                          dateTime={`${selectedJourney.serviceDateIso}T${selectedJourney.plannedEnd}:00+08:00`}
-                        >
-                          {selectedJourney.plannedEnd}
-                        </time>
-                      </dd>
-                    </div>
+                  <p aria-live="polite" className="text-sm text-muted-foreground">
+                    {filteredJourneys.length} matching service
+                    {filteredJourneys.length === 1 ? "" : "s"}
+                  </p>
+                </div>
+                {board.state === "loading" ? (
+                  <div
+                    aria-busy="true"
+                    aria-label="Loading scheduled services"
+                    className="mt-5 grid gap-4 lg:grid-cols-2"
+                    role="status"
+                  >
+                    <Skeleton className="h-96 rounded-sm" />
+                    <Skeleton className="h-96 rounded-sm" />
                   </div>
-                </dl>
+                ) : filteredJourneys.length > 0 ? (
+                  <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                    {filteredJourneys.map((journey) => (
+                      <JourneyCard
+                        isFavourite={favouriteIds.includes(journey.id)}
+                        isSelected={journey.id === selectedJourneyId}
+                        journey={journey}
+                        key={journey.id}
+                        onSelect={selectJourney}
+                        onToggleFavourite={toggleFavourite}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-5 border border-dashed border-border p-6" role="status">
+                    <p className="text-lg font-semibold">No matching service</p>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      Try a route label, a station name, or remove a service-mode filter.
+                    </p>
+                  </div>
+                )}
               </section>
-            ) : null}
-          </aside>
-        </div>
+
+              <aside className="min-w-0 space-y-6 xl:sticky xl:top-6 xl:self-start xl:border-l xl:border-border xl:pl-8">
+                <Button
+                  aria-controls="network-map-heading"
+                  aria-expanded={showNetworkOnMobile}
+                  className="w-full xl:hidden"
+                  onClick={() => setShowNetworkOnMobile((isVisible) => !isVisible)}
+                  type="button"
+                  variant="outline"
+                >
+                  {showNetworkOnMobile ? "Hide network view" : "Show network view"}
+                </Button>
+                <div className={showNetworkOnMobile ? "min-w-0" : "hidden min-w-0 xl:block"}>
+                  <Suspense
+                    fallback={
+                      <section
+                        aria-busy="true"
+                        aria-label="Loading network view"
+                        className="space-y-3"
+                      >
+                        <div>
+                          <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                            KL / Klang Valley first
+                          </p>
+                          <h2 className="mt-1 text-xl font-semibold">Network view</h2>
+                        </div>
+                        <Skeleton className="h-72 rounded-sm sm:h-96" />
+                      </section>
+                    }
+                  >
+                    <NetworkMapPanel
+                      focus={networkFocus}
+                      isDark={isDark}
+                      onSelectVehicle={selectVehicle}
+                      selectedJourney={selectedJourney}
+                      vehicles={mapVehicles}
+                    />
+                  </Suspense>
+                </div>
+                {selectedJourney &&
+                filteredJourneys.some((journey) => journey.id === selectedJourney.id) ? (
+                  <section
+                    aria-labelledby="selected-service-heading"
+                    className="border-y border-border py-5"
+                  >
+                    <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                      Selected service
+                    </p>
+                    <h2 id="selected-service-heading" className="mt-1 text-xl font-semibold">
+                      {selectedJourney.routeLabel} · {selectedJourney.routeName}
+                    </h2>
+                    <dl className="mt-4 space-y-3 text-sm">
+                      <div className="flex items-start gap-3">
+                        <Crosshair aria-hidden="true" className="mt-0.5 text-primary" />
+                        <div>
+                          <dt className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
+                            Direction
+                          </dt>
+                          <dd className="mt-1">
+                            {selectedJourney.origin} to {selectedJourney.destination}
+                          </dd>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <CalendarBlank aria-hidden="true" className="mt-0.5 text-primary" />
+                        <div>
+                          <dt className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
+                            Planned journey
+                          </dt>
+                          <dd className="mt-1">
+                            <time dateTime={selectedJourney.serviceDateIso}>
+                              {selectedJourney.serviceDate}
+                            </time>
+                            ,{" "}
+                            <time
+                              dateTime={`${selectedJourney.serviceDateIso}T${selectedJourney.plannedStart}:00+08:00`}
+                            >
+                              {selectedJourney.plannedStart}
+                            </time>
+                            –
+                            <time
+                              dateTime={`${selectedJourney.serviceDateIso}T${selectedJourney.plannedEnd}:00+08:00`}
+                            >
+                              {selectedJourney.plannedEnd}
+                            </time>
+                          </dd>
+                        </div>
+                      </div>
+                    </dl>
+                  </section>
+                ) : null}
+              </aside>
+            </div>
+          </div>
+        )}
       </main>
       <footer className="mt-10 border-t border-border bg-muted/35">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-6 text-sm text-muted-foreground sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <p>Malaysia Transit Live · public-information service</p>
-          <p className="font-mono text-xs">Local favourites stay in this browser.</p>
+          <p className="font-mono text-xs">
+            <a
+              className="underline underline-offset-4 hover:text-foreground"
+              href="https://developer.data.gov.my/realtime-api/gtfs-realtime"
+              rel="noreferrer"
+              target="_blank"
+            >
+              Malaysia Official Open API
+            </a>{" "}
+            · Local favourites stay in this browser.
+          </p>
         </div>
       </footer>
     </div>

@@ -18,6 +18,13 @@ def test_parse_gtfs_time_when_after_midnight_preserves_day_offset() -> None:
     assert parsed_time.raw_value == raw_time
 
 
+def test_parse_gtfs_time_when_hour_has_one_digit_accepts_official_feed_format() -> None:
+    parsed_time = parse_gtfs_time("6:00:00")
+
+    assert parsed_time.day_offset == 0
+    assert parsed_time.time_of_day == time(hour=6)
+
+
 @pytest.mark.parametrize("raw_time", ["24:60:00", "-01:00:00", "not-a-time"])
 def test_parse_gtfs_time_when_invalid_raises_typed_error(raw_time: str) -> None:
     # Given
