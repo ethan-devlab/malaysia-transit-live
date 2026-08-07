@@ -21,6 +21,13 @@ const previewSources: Dashboard["sources"] = [
     live_vehicle_count: 1,
     stale_vehicle_count: 1,
     unknown_vehicle_count: 0,
+    geometry_coverage: {
+      trip_count: 420,
+      official_shape_count: 410,
+      matched_infrastructure_count: 0,
+      stop_sequence_count: 10,
+      unavailable_count: 0,
+    },
   },
   {
     feed: "ktmb",
@@ -39,6 +46,13 @@ const previewSources: Dashboard["sources"] = [
     live_vehicle_count: 0,
     stale_vehicle_count: 1,
     unknown_vehicle_count: 0,
+    geometry_coverage: {
+      trip_count: 88,
+      official_shape_count: 0,
+      matched_infrastructure_count: 0,
+      stop_sequence_count: 88,
+      unavailable_count: 0,
+    },
   },
   {
     feed: "rapid-penang",
@@ -57,6 +71,13 @@ const previewSources: Dashboard["sources"] = [
     live_vehicle_count: 0,
     stale_vehicle_count: 0,
     unknown_vehicle_count: 0,
+    geometry_coverage: {
+      trip_count: 320,
+      official_shape_count: 300,
+      matched_infrastructure_count: 0,
+      stop_sequence_count: 20,
+      unavailable_count: 0,
+    },
   },
   {
     feed: "mybas-kuching",
@@ -75,6 +96,13 @@ const previewSources: Dashboard["sources"] = [
     live_vehicle_count: 0,
     stale_vehicle_count: 0,
     unknown_vehicle_count: 0,
+    geometry_coverage: {
+      trip_count: 0,
+      official_shape_count: 0,
+      matched_infrastructure_count: 0,
+      stop_sequence_count: 0,
+      unavailable_count: 0,
+    },
   },
 ]
 

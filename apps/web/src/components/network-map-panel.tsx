@@ -1,6 +1,7 @@
 import { MapTrifold, Warning } from "@phosphor-icons/react"
 import { useQuery } from "@tanstack/react-query"
 import maplibregl from "maplibre-gl"
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
@@ -8,8 +9,11 @@ import type { NetworkFocus, TransitJourney } from "@/domain/transit"
 import type { ValidatedVehicle } from "@/hooks/use-transit-board"
 import { shouldFallbackForMapError } from "@/lib/map-runtime"
 import { fetchTripDetail, type TripDetail } from "@/lib/transit-api"
+import { type MapRouteData, routeDataFor } from "@/lib/trip-route-data"
 
 import "maplibre-gl/dist/maplibre-gl.css"
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
 interface NetworkMapPanelProps {
   readonly focus: NetworkFocus | undefined
@@ -24,19 +28,6 @@ interface TripTarget {
   readonly id: string
   readonly serviceDate: string
   readonly tripId: string
-}
-
-interface MapRouteData {
-  readonly features: readonly MapRouteFeature[]
-  readonly type: "FeatureCollection"
-}
-
-interface MapRouteFeature {
-  readonly geometry:
-    | { readonly coordinates: [number, number]; readonly type: "Point" }
-    | { readonly coordinates: [number, number][]; readonly type: "LineString" }
-  readonly properties: Record<string, never>
-  readonly type: "Feature"
 }
 
 interface NextScheduledStop {
@@ -55,7 +46,10 @@ interface VehicleFeatureCollection {
 
 const mapTilerKey = import.meta.env["VITE_MAPTILER_KEY"]
 const routeSourceId = "selected-trip-route"
-const routeLineLayerId = "selected-trip-line"
+const routeOfficialCasingLayerId = "selected-trip-official-casing"
+const routeOfficialLayerId = "selected-trip-official-line"
+const routeApproximateCasingLayerId = "selected-trip-approximate-casing"
+const routeApproximateLayerId = "selected-trip-approximate-line"
 const routeStopLayerId = "selected-trip-stops"
 const vehicleSourceId = "dashboard-vehicles"
 const vehicleClusterLayerId = "dashboard-vehicle-clusters"
@@ -103,7 +97,8 @@ export function NetworkMapPanel({
       tripTarget?.serviceDate,
     ],
   })
-  const routeData = useMemo(() => routeDataFor(tripQuery.data?.stops ?? []), [tripQuery.data])
+  const routeData = useMemo(() => routeDataFor(tripQuery.data), [tripQuery.data])
+  const routeColour = tripQuery.data?.route_color ? `#${tripQuery.data.route_color}` : undefined
   const nextStop = useMemo(() => nextScheduledStop(tripQuery.data), [tripQuery.data])
 
   useEffect(() => {
@@ -127,10 +122,12 @@ export function NetworkMapPanel({
     let hasLoaded = false
     const onLoad = () => {
       hasLoaded = true
+      mapInstance.current = map
       setMapLoaded(true)
     }
 
-    mapInstance.current = map
+    mapInstance.current = null
+    setMapLoaded(false)
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right")
     map.on("styleimagemissing", (event) => {
       if (event.id === " " && !map.hasImage(event.id)) {
@@ -147,8 +144,8 @@ export function NetworkMapPanel({
         marker.remove()
       })
       markerInstances.current = []
-      map.remove()
       mapInstance.current = null
+      map.remove()
       setMapLoaded(false)
     }
   }, [isDark, mapFailed])
@@ -172,7 +169,10 @@ export function NetworkMapPanel({
         })),
         type: "FeatureCollection",
       }
-      return addVehicleClusterLayers(map, vehicleData, onSelectVehicle)
+      const removeClusterLayers = addVehicleClusterLayers(map, vehicleData, onSelectVehicle)
+      return () => {
+        if (mapInstance.current === map) removeClusterLayers()
+      }
     }
     markerInstances.current = vehicles.map((vehicle) => {
       const marker = document.createElement("button")
@@ -195,12 +195,12 @@ export function NetworkMapPanel({
       removeRouteLayers(map)
       return
     }
-    addOrUpdateRouteLayers(map, routeData)
+    addOrUpdateRouteLayers(map, routeData, routeColour)
     if (tripTarget && focusedTripId.current !== tripTarget.id) {
       focusedTripId.current = tripTarget.id
       focusRoute(map, routeData)
     }
-  }, [mapLoaded, routeData, tripTarget])
+  }, [mapLoaded, routeColour, routeData, tripTarget])
 
   useEffect(() => {
     const map = mapInstance.current
@@ -240,6 +240,7 @@ export function NetworkMapPanel({
             ref={mapElement}
           />
           <MapStatus
+            geometry={tripQuery.data?.geometry}
             hasTripTarget={tripTarget !== undefined}
             routeId={tripQuery.data?.route_id}
             selectedJourney={focusedJourney}
@@ -247,8 +248,8 @@ export function NetworkMapPanel({
             tripQueryState={tripQuery.status}
           />
           <p className="text-sm text-muted-foreground">
-            Map data © MapTiler © OpenStreetMap contributors. The route line joins scheduled stop
-            coordinates; it is not a road-level path or an ETA.
+            Map data © MapTiler © OpenStreetMap contributors. Route source and quality are stated
+            above; timetable details are not live arrival predictions.
           </p>
         </>
       ) : (
@@ -288,12 +289,14 @@ export function NetworkMapPanel({
 }
 
 function MapStatus({
+  geometry,
   hasTripTarget,
   routeId,
   selectedJourney,
   selectedVehicle,
   tripQueryState,
 }: {
+  readonly geometry: TripDetail["geometry"] | undefined
   readonly hasTripTarget: boolean
   readonly routeId: string | undefined
   readonly selectedJourney: TransitJourney | undefined
@@ -317,6 +320,38 @@ function MapStatus({
     return (
       <p className="text-sm text-[color:var(--status-error-foreground)]">
         The selected route could not be loaded.
+      </p>
+    )
+  }
+  if (geometry?.quality === "official_shape") {
+    return (
+      <p className="text-sm text-muted-foreground">
+        <span className="font-medium text-foreground">Official GTFS alignment.</span> Shape{" "}
+        {geometry.shape_id} from static version {geometry.source_version}.
+      </p>
+    )
+  }
+  if (geometry?.quality === "matched_infrastructure") {
+    return (
+      <p className="text-sm text-muted-foreground">
+        <span className="font-medium text-foreground">Infrastructure-matched alignment.</span>{" "}
+        {geometry.attribution}
+      </p>
+    )
+  }
+  if (geometry?.quality === "stop_sequence") {
+    return (
+      <p className="text-sm text-[color:var(--status-warning-foreground)]">
+        <span className="font-medium">Approximate alignment.</span> The dashed line joins scheduled
+        stops and does not claim to follow rail or road infrastructure.
+      </p>
+    )
+  }
+  if (geometry?.quality === "unavailable") {
+    return (
+      <p className="text-sm text-[color:var(--status-warning-foreground)]">
+        <span className="font-medium">Route alignment unavailable.</span> Scheduled stops remain
+        visible when coordinates are available.
       </p>
     )
   }
@@ -464,33 +499,6 @@ function tripTargetFor(
   }
 }
 
-function routeDataFor(
-  stops: readonly { readonly latitude: number | null; readonly longitude: number | null }[],
-): MapRouteData {
-  const points: [number, number][] = []
-  stops.forEach((stop) => {
-    if (stop.latitude !== null && stop.longitude !== null) {
-      points.push([stop.longitude, stop.latitude])
-    }
-  })
-  const features: MapRouteFeature[] = points.map((coordinates) => ({
-    geometry: { coordinates, type: "Point" },
-    properties: {},
-    type: "Feature",
-  }))
-  if (points.length > 1) {
-    features.unshift({
-      geometry: { coordinates: points, type: "LineString" },
-      properties: {},
-      type: "Feature",
-    })
-  }
-  return {
-    features,
-    type: "FeatureCollection",
-  }
-}
-
 function nextScheduledStop(tripDetail: TripDetail | undefined): NextScheduledStop | undefined {
   if (!tripDetail) {
     return undefined
@@ -556,30 +564,63 @@ function gtfsTimeToSeconds(time: string): number | undefined {
   return hours * 3_600 + minutes * 60 + seconds
 }
 
-function addOrUpdateRouteLayers(map: maplibregl.Map, routeData: MapRouteData) {
-  const source = map.getSource(routeSourceId)
-  if (source) {
-    const geoJsonSource = source as maplibregl.GeoJSONSource
-    geoJsonSource.setData(routeData)
+function addOrUpdateRouteLayers(
+  map: maplibregl.Map,
+  routeData: MapRouteData,
+  gtfsRouteColour: string | undefined,
+) {
+  const routeColour = gtfsRouteColour ?? cssToken("--action-primary")
+  if (!routeColour) {
     return
   }
-  const routeColour = cssToken("--action-primary")
   const stopColour = cssToken("--status-live")
   const stopStrokeColour = cssToken("--surface-primary")
-  if (!routeColour || !stopColour || !stopStrokeColour) {
+  const routeCasingColour = cssToken("--text-primary")
+  if (!routeColour || !routeCasingColour || !stopColour || !stopStrokeColour) {
     return
   }
+  const routeQuality = routeData.features.find((feature) => feature.geometry.type === "LineString")
+    ?.properties.quality
+
+  removeRouteLayers(map)
   map.addSource(routeSourceId, { data: routeData, type: "geojson" })
+  if (routeQuality === "official_shape" || routeQuality === "matched_infrastructure") {
+    map.addLayer({
+      id: routeOfficialCasingLayerId,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": routeCasingColour, "line-opacity": 0.7, "line-width": 8 },
+      source: routeSourceId,
+      type: "line",
+    })
+    map.addLayer({
+      id: routeOfficialLayerId,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": routeColour, "line-width": 4 },
+      source: routeSourceId,
+      type: "line",
+    })
+  } else if (routeQuality === "stop_sequence") {
+    map.addLayer({
+      id: routeApproximateCasingLayerId,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": routeCasingColour,
+        "line-dasharray": [2, 2],
+        "line-opacity": 0.7,
+        "line-width": 8,
+      },
+      source: routeSourceId,
+      type: "line",
+    })
+    map.addLayer({
+      id: routeApproximateLayerId,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": routeColour, "line-dasharray": [2, 2], "line-width": 4 },
+      source: routeSourceId,
+      type: "line",
+    })
+  }
   map.addLayer({
-    filter: ["==", "$type", "LineString"],
-    id: routeLineLayerId,
-    layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": routeColour, "line-width": 4 },
-    source: routeSourceId,
-    type: "line",
-  })
-  map.addLayer({
-    filter: ["==", "$type", "Point"],
     id: routeStopLayerId,
     paint: {
       "circle-color": stopColour,
@@ -596,8 +637,17 @@ function removeRouteLayers(map: maplibregl.Map) {
   if (map.getLayer(routeStopLayerId)) {
     map.removeLayer(routeStopLayerId)
   }
-  if (map.getLayer(routeLineLayerId)) {
-    map.removeLayer(routeLineLayerId)
+  if (map.getLayer(routeApproximateLayerId)) {
+    map.removeLayer(routeApproximateLayerId)
+  }
+  if (map.getLayer(routeApproximateCasingLayerId)) {
+    map.removeLayer(routeApproximateCasingLayerId)
+  }
+  if (map.getLayer(routeOfficialLayerId)) {
+    map.removeLayer(routeOfficialLayerId)
+  }
+  if (map.getLayer(routeOfficialCasingLayerId)) {
+    map.removeLayer(routeOfficialCasingLayerId)
   }
   if (map.getSource(routeSourceId)) {
     map.removeSource(routeSourceId)
@@ -691,7 +741,9 @@ function removeVehicleLayers(map: maplibregl.Map) {
 
 function focusRoute(map: maplibregl.Map, routeData: MapRouteData) {
   const points = routeData.features.flatMap((feature) =>
-    feature.geometry.type === "Point" ? [feature.geometry.coordinates] : [],
+    feature.geometry.type === "Point"
+      ? [feature.geometry.coordinates]
+      : feature.geometry.coordinates,
   )
   if (points.length === 0) {
     return
@@ -755,7 +807,7 @@ function localServiceDate(): string {
 }
 
 function motionDuration(): number {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 300
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 200
 }
 
 function supportsWebGl(): boolean {

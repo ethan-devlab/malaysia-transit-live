@@ -75,12 +75,64 @@ const tripStopSchema = z.object({
   departure_time: z.string(),
 })
 
+const coordinateSchema = z.tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)])
+const lineCoordinatesSchema = z
+  .array(coordinateSchema)
+  .min(2)
+  .refine(
+    (coordinates) =>
+      new Set(coordinates.map(([longitude, latitude]) => `${longitude}:${latitude}`)).size > 1,
+    "Route geometry requires at least two distinct coordinates.",
+  )
+const routeColourSchema = z.string().regex(/^(?:[0-9A-F]{6})?$/)
+const tripGeometrySchema = z.discriminatedUnion("quality", [
+  z.object({
+    type: z.literal("LineString"),
+    coordinates: lineCoordinatesSchema,
+    quality: z.literal("official_shape"),
+    shape_id: z.string().min(1),
+    source: z.literal("gtfs"),
+    source_version: z.string().min(1),
+    attribution: z.null(),
+  }),
+  z.object({
+    type: z.literal("LineString"),
+    coordinates: lineCoordinatesSchema,
+    quality: z.literal("matched_infrastructure"),
+    shape_id: z.null(),
+    source: z.literal("derived_infrastructure"),
+    source_version: z.string().min(1),
+    attribution: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("LineString"),
+    coordinates: lineCoordinatesSchema,
+    quality: z.literal("stop_sequence"),
+    shape_id: z.null(),
+    source: z.literal("scheduled_stops"),
+    source_version: z.string().min(1),
+    attribution: z.null(),
+  }),
+  z.object({
+    type: z.literal("LineString"),
+    coordinates: z.null(),
+    quality: z.literal("unavailable"),
+    shape_id: z.null(),
+    source: z.literal("none"),
+    source_version: z.string().min(1),
+    attribution: z.null(),
+  }),
+])
+
 const tripDetailSchema = z.object({
   trip_id: z.string(),
   route_id: z.string(),
   headsign: z.string(),
   service_date: z.string().date(),
   is_scheduled: z.boolean(),
+  route_color: routeColourSchema,
+  route_text_color: routeColourSchema,
+  geometry: tripGeometrySchema,
   stops: z.array(tripStopSchema),
   source: sourceSchema,
 })
@@ -176,6 +228,10 @@ export async function fetchTripDetail(
     throw new TransitApiError(response.status)
   }
   const payload: unknown = await response.json()
+  return parseTripDetail(payload)
+}
+
+export function parseTripDetail(payload: unknown): TripDetail {
   return tripDetailSchema.parse(payload)
 }
 

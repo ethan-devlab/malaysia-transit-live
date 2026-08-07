@@ -40,6 +40,13 @@ const data = {
       live_vehicle_count: 1,
       stale_vehicle_count: 0,
       unknown_vehicle_count: 0,
+      geometry_coverage: {
+        trip_count: 1,
+        official_shape_count: 1,
+        matched_infrastructure_count: 0,
+        stop_sequence_count: 0,
+        unavailable_count: 0,
+      },
     },
   ],
   vehicles: { items: [], total_count: 0, returned_count: 0, next_cursor: null, truncated: false },

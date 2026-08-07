@@ -11,6 +11,7 @@ from transit.http.api_common import dashboard_mode
 from transit.http.query_helpers import active_versions
 from transit.http.schemas import (
     DashboardFilters,
+    DashboardGeometryCoverage,
     DashboardOption,
     DashboardResponse,
     DashboardSource,
@@ -30,6 +31,7 @@ from transit.models import (
     GtfsStop,
     GtfsStopTime,
     GtfsTrip,
+    StaticFeedVersion,
     TransitFeed,
     UpstreamFetchAttempt,
     VehicleSnapshot,
@@ -110,6 +112,28 @@ def _next_scheduled_stops(
         if stop_name:
             next_stops[key] = stop_name
     return next_stops
+
+
+def _geometry_coverage(version: StaticFeedVersion | None) -> DashboardGeometryCoverage:
+    if version is None:
+        return DashboardGeometryCoverage(
+            trip_count=0,
+            official_shape_count=0,
+            matched_infrastructure_count=0,
+            stop_sequence_count=0,
+            unavailable_count=0,
+        )
+    trip_count = int(version.record_counts.get("trips", 0))
+    trips_with_shape = int(version.record_counts.get("trips_with_shape", 0))
+    orphan_trip_shapes = int(version.record_counts.get("orphan_trip_shapes", 0))
+    official_shape_count = max(0, trips_with_shape - orphan_trip_shapes)
+    return DashboardGeometryCoverage(
+        trip_count=trip_count,
+        official_shape_count=official_shape_count,
+        matched_infrastructure_count=0,
+        stop_sequence_count=max(0, trip_count - official_shape_count),
+        unavailable_count=0,
+    )
 
 
 @router.get("/dashboard", response=DashboardResponse)
@@ -269,6 +293,7 @@ def dashboard(
                 live_vehicle_count=feed_live_counts.get(feed.id, 0),
                 stale_vehicle_count=feed_stale_counts.get(feed.id, 0),
                 unknown_vehicle_count=feed_unknown_counts.get(feed.id, 0),
+                geometry_coverage=_geometry_coverage(version),
             ),
         )
     next_offset = offset + len(vehicle_rows)

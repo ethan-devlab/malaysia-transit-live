@@ -398,9 +398,9 @@ function HealthOverview({
         <p className="text-sm text-muted-foreground">{sources.length} feeds</p>
       </div>
       <div className="overflow-x-auto border border-border">
-        <table className="w-full min-w-[54rem] text-left text-sm">
+        <table className="w-full min-w-[66rem] text-left text-sm">
           <caption className="sr-only">
-            Static and realtime health for each official transit feed
+            Static, realtime, and route geometry health for each official transit feed
           </caption>
           <thead className="bg-muted/45 text-xs uppercase tracking-wide text-muted-foreground">
             <tr>
@@ -427,6 +427,7 @@ function HealthOverview({
                 ascending={sortAscending}
                 onSort={onSort}
               />
+              <th className="px-3 py-3">Route geometry</th>
               <th className="px-3 py-3">Last success</th>
             </tr>
           </thead>
@@ -466,6 +467,15 @@ function HealthOverview({
                   <span className="mt-1 block text-xs text-muted-foreground">
                     {source.live_vehicle_count} live · {source.stale_vehicle_count} stale ·{" "}
                     {source.unknown_vehicle_count} unknown
+                  </span>
+                </td>
+                <td className="px-3 py-3">
+                  {source.geometry_coverage.official_shape_count} /{" "}
+                  {source.geometry_coverage.trip_count} official
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    {source.geometry_coverage.matched_infrastructure_count} matched ·{" "}
+                    {source.geometry_coverage.stop_sequence_count} approximate ·{" "}
+                    {source.geometry_coverage.unavailable_count} unavailable
                   </span>
                 </td>
                 <td className="px-3 py-3 text-xs text-muted-foreground">

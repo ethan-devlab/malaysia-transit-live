@@ -98,6 +98,30 @@ def test_dashboard_returns_feed_catalogue_and_enriched_vehicle() -> None:
 
 
 @pytest.mark.django_db
+def test_dashboard_uses_materialised_geometry_coverage_without_trip_scans() -> None:
+    _, version = _feed("rapid-rail-kl")
+    version.record_counts = {
+        "trips": 120,
+        "trips_with_shape": 119,
+        "trips_without_shape": 1,
+        "orphan_trip_shapes": 1,
+    }
+    version.save(update_fields=("record_counts",))
+
+    with CaptureQueriesContext(connection) as queries:
+        result = dashboard(RequestFactory().get("/api/v1/dashboard"))
+
+    assert result.sources[0].geometry_coverage.dict() == {
+        "trip_count": 120,
+        "official_shape_count": 118,
+        "matched_infrastructure_count": 0,
+        "stop_sequence_count": 2,
+        "unavailable_count": 0,
+    }
+    assert not any('FROM "transit_gtfstrip"' in query["sql"] for query in queries.captured_queries)
+
+
+@pytest.mark.django_db
 def test_dashboard_filters_by_mode_operator_and_region() -> None:
     bus_feed, bus_version = _feed("rapid-bus-kl")
     rail_feed, rail_version = _feed(

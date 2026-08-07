@@ -18,6 +18,7 @@ from transit.services.static_import.schedule_loaders import (
     load_stop_times,
     load_trips,
 )
+from transit.services.static_import.shape_loader import load_shapes
 
 REQUIRED_RECORD_FILES = {
     "agencies": "agency.txt",
@@ -45,7 +46,11 @@ def import_static_gtfs_archive(
     try:
         with zipfile.ZipFile(archive_path) as archive, transaction.atomic():
             record_counts, orphan_stop_time_count = _load_all_records(archive, version)
-            warnings = _build_warnings(archive, orphan_stop_time_count)
+            warnings = _build_warnings(
+                archive,
+                orphan_stop_time_count,
+                record_counts["orphan_trip_shapes"],
+            )
             _activate_version(version, record_counts, warnings)
     except StaticImportError as error:
         _reject_version(version, error)
@@ -76,6 +81,7 @@ def _load_all_records(
     route_count = load_routes(archive, version)
     stop_count = load_stops(archive, version)
     trip_count = load_trips(archive, version)
+    shape_summary = load_shapes(archive, version)
     stop_time_count, orphan_stop_time_count = load_stop_times(archive, version)
     record_counts = {
         "agencies": agency_count,
@@ -85,6 +91,11 @@ def _load_all_records(
         "service_exceptions": exception_count,
         "trips": trip_count,
         "stop_times": stop_time_count,
+        "shapes": shape_summary.distinct_shape_count,
+        "shape_points": shape_summary.point_count,
+        "trips_with_shape": shape_summary.trips_with_shape_count,
+        "trips_without_shape": shape_summary.trips_without_shape_count,
+        "orphan_trip_shapes": shape_summary.orphan_trip_shape_count,
     }
     for record_name, source_file in REQUIRED_RECORD_FILES.items():
         if record_counts[record_name] == 0:
@@ -99,6 +110,7 @@ def _load_all_records(
 def _build_warnings(
     archive: zipfile.ZipFile,
     orphan_stop_time_count: int,
+    orphan_trip_shape_count: int,
 ) -> tuple[tuple[str, str, str], ...]:
     warnings: list[tuple[str, str, str]] = []
     if not has_member(archive, "calendar.txt"):
@@ -124,6 +136,15 @@ def _build_warnings(
                 "stop_times.txt",
                 f"{orphan_stop_time_count} stop-time records reference a stop "
                 "missing from stops.txt.",
+            )
+        )
+    if orphan_trip_shape_count:
+        warnings.append(
+            (
+                "orphan_trip_shape_reference",
+                "trips.txt",
+                f"{orphan_trip_shape_count} trip records reference a shape "
+                "missing from shapes.txt.",
             )
         )
     return tuple(warnings)

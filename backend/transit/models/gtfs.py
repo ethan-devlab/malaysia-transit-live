@@ -139,6 +139,38 @@ class GtfsTrip(models.Model):
         ]
 
 
+class GtfsShapePoint(models.Model):
+    feed_version = models.ForeignKey(
+        StaticFeedVersion,
+        on_delete=models.CASCADE,
+        related_name="shape_points",
+    )
+    shape_id = models.CharField(max_length=160)
+    sequence = models.PositiveIntegerField()
+    latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    distance_travelled = models.DecimalField(
+        max_digits=20,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=("feed_version", "shape_id", "sequence"),
+                name="unique_shape_point_per_static_version",
+            )
+        ]
+        indexes: ClassVar[list[models.Index]] = [
+            models.Index(
+                fields=("feed_version", "shape_id", "sequence"),
+                name="gtfs_shape_feed_shape_seq_idx",
+            )
+        ]
+
+
 class GtfsStopTime(models.Model):
     trip = models.ForeignKey(GtfsTrip, on_delete=models.CASCADE, related_name="stop_times")
     stop_id = models.CharField(max_length=160)

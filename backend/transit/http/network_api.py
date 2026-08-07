@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
+from typing import Final
 
 from django.db.models import Q
 from django.utils import timezone
@@ -22,15 +24,22 @@ from transit.http.schemas import (
     SearchResponse,
     StopDetail,
     TripDetail,
+    TripGeometry,
     TripStop,
     VehicleLocation,
 )
 from transit.http.status_api import VEHICLE_RETENTION_SECONDS, vehicle_location
 from transit.models import GtfsRoute, GtfsService, GtfsStop, GtfsStopTime, GtfsTrip, VehicleSnapshot
+from transit.services.trip_geometry import resolve_trip_geometry
 
 router = Router()
 MINIMUM_SEARCH_LENGTH = 2
 MAXIMUM_SEARCH_LENGTH = 120
+_ROUTE_COLOUR_PATTERN: Final = re.compile(r"^[0-9A-Fa-f]{6}$")
+
+
+def _route_colour(value: str) -> str:
+    return value.upper() if _ROUTE_COLOUR_PATTERN.fullmatch(value) else ""
 
 
 @router.get("/search", response=SearchResponse)
@@ -135,7 +144,8 @@ def trip_detail(
     try:
         trip = GtfsTrip.objects.get(feed_version=version, trip_id=trip_id)
         service = GtfsService.objects.get(feed_version=version, service_id=trip.service_id)
-    except (GtfsService.DoesNotExist, GtfsTrip.DoesNotExist) as error:
+        route = GtfsRoute.objects.get(feed_version=version, route_id=trip.route_id)
+    except (GtfsRoute.DoesNotExist, GtfsService.DoesNotExist, GtfsTrip.DoesNotExist) as error:
         raise HttpError(404, "Trip not found in the active static version.") from error
     stop_times = list(GtfsStopTime.objects.filter(trip=trip).order_by("stop_sequence"))
     stops_by_id = {
@@ -145,23 +155,43 @@ def trip_detail(
             stop_id__in=[stop_time.stop_id for stop_time in stop_times],
         ).values_list("stop_id", "name", "latitude", "longitude")
     }
+    trip_stops = [
+        TripStop(
+            sequence=stop_time.stop_sequence,
+            stop_id=stop_time.stop_id,
+            name=stops_by_id.get(stop_time.stop_id, (stop_time.stop_id, None, None))[0],
+            latitude=stops_by_id.get(stop_time.stop_id, ("", None, None))[1],
+            longitude=stops_by_id.get(stop_time.stop_id, ("", None, None))[2],
+            arrival_time=stop_time.arrival_time,
+            departure_time=stop_time.departure_time,
+        )
+        for stop_time in stop_times
+    ]
+    geometry = resolve_trip_geometry(
+        version,
+        trip,
+        tuple(
+            (stop.longitude, stop.latitude)
+            for stop in trip_stops
+            if stop.latitude is not None and stop.longitude is not None
+        ),
+    )
     return TripDetail(
         trip_id=trip.trip_id,
         route_id=trip.route_id,
         headsign=trip.headsign,
         service_date=service_date.isoformat(),
         is_scheduled=is_service_scheduled(service, service_date),
-        stops=[
-            TripStop(
-                sequence=stop_time.stop_sequence,
-                stop_id=stop_time.stop_id,
-                name=stops_by_id.get(stop_time.stop_id, (stop_time.stop_id, None, None))[0],
-                latitude=stops_by_id.get(stop_time.stop_id, ("", None, None))[1],
-                longitude=stops_by_id.get(stop_time.stop_id, ("", None, None))[2],
-                arrival_time=stop_time.arrival_time,
-                departure_time=stop_time.departure_time,
-            )
-            for stop_time in stop_times
-        ],
+        route_color=_route_colour(route.route_color),
+        route_text_color=_route_colour(route.text_color),
+        geometry=TripGeometry(
+            coordinates=list(geometry.coordinates) if geometry.coordinates is not None else None,
+            quality=geometry.quality,
+            shape_id=geometry.shape_id,
+            source=geometry.source,
+            source_version=geometry.source_version,
+            attribution=geometry.attribution,
+        ),
+        stops=trip_stops,
         source=source_metadata(feed, version),
     )

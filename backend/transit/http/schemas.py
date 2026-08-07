@@ -63,12 +63,30 @@ class TripStop(Schema):
     departure_time: str
 
 
+class TripGeometry(Schema):
+    type: Literal["LineString"] = "LineString"
+    coordinates: list[tuple[float, float]] | None
+    quality: Literal[
+        "official_shape",
+        "matched_infrastructure",
+        "stop_sequence",
+        "unavailable",
+    ]
+    shape_id: str | None
+    source: Literal["gtfs", "derived_infrastructure", "scheduled_stops", "none"]
+    source_version: str
+    attribution: str | None
+
+
 class TripDetail(Schema):
     trip_id: str
     route_id: str
     headsign: str
     service_date: str
     is_scheduled: bool
+    route_color: str
+    route_text_color: str
+    geometry: TripGeometry
     stops: list[TripStop]
     source: SourceMetadata
 
@@ -176,6 +194,14 @@ class DashboardVehicle(Schema):
     next_scheduled_stop: str | None
 
 
+class DashboardGeometryCoverage(Schema):
+    trip_count: int
+    official_shape_count: int
+    matched_infrastructure_count: int
+    stop_sequence_count: int
+    unavailable_count: int
+
+
 class DashboardSource(Schema):
     feed: str
     display_name: str
@@ -193,6 +219,7 @@ class DashboardSource(Schema):
     live_vehicle_count: int
     stale_vehicle_count: int
     unknown_vehicle_count: int
+    geometry_coverage: DashboardGeometryCoverage
 
 
 class DashboardSummary(Schema):

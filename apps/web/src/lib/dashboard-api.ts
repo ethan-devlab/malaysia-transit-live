@@ -46,6 +46,13 @@ const dashboardSourceSchema = z.object({
   live_vehicle_count: z.number().int().nonnegative(),
   stale_vehicle_count: z.number().int().nonnegative(),
   unknown_vehicle_count: z.number().int().nonnegative(),
+  geometry_coverage: z.object({
+    trip_count: z.number().int().nonnegative(),
+    official_shape_count: z.number().int().nonnegative(),
+    matched_infrastructure_count: z.number().int().nonnegative(),
+    stop_sequence_count: z.number().int().nonnegative(),
+    unavailable_count: z.number().int().nonnegative(),
+  }),
 })
 const dashboardSchema = z.object({
   generated_at: z.string().datetime(),
