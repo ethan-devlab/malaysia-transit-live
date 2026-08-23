@@ -78,6 +78,12 @@ describe("trip route geometry", () => {
     expect(routeData.features.filter((feature) => feature.geometry.type === "Point")).toHaveLength(
       2,
     )
+    expect(
+      routeData.features.filter(
+        (feature) =>
+          feature.properties.featureKind === "stop" && feature.properties.stopKind === "terminus",
+      ),
+    ).toHaveLength(2)
   })
 
   it("preserves approximate quality for dashed styling", () => {
@@ -116,6 +122,46 @@ describe("trip route geometry", () => {
 
     expect(routeData.features).toHaveLength(2)
     expect(routeData.features.every((feature) => feature.geometry.type === "Point")).toBe(true)
+  })
+
+  it("marks only the requested static scheduled stop as selected without inventing an interchange", () => {
+    const trip = parseTripDetail(
+      tripPayload({
+        type: "LineString",
+        coordinates: [
+          [101.6, 3.1],
+          [101.7, 3.2],
+        ],
+        quality: "official_shape",
+        shape_id: "shape-a",
+        source: "gtfs",
+        source_version: "version-1",
+        attribution: null,
+      }),
+    )
+
+    const stops = routeDataFor(trip, { selectedStopId: "S2" }).features.filter(
+      (feature) => feature.properties.featureKind === "stop",
+    )
+
+    expect(stops).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          properties: expect.objectContaining({
+            isSelected: true,
+            stopId: "S2",
+            stopKind: "terminus",
+          }),
+        }),
+        expect.objectContaining({
+          properties: expect.objectContaining({
+            isSelected: false,
+            stopId: "S1",
+          }),
+        }),
+      ]),
+    )
+    expect(stops.some((feature) => "isVerifiedInterchange" in feature.properties)).toBe(false)
   })
 
   it("accepts attributed infrastructure geometry and rejects malformed contracts", () => {

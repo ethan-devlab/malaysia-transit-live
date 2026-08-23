@@ -97,6 +97,13 @@ Use shadcn/ui primitives first. Use `@phosphor-icons/react` for SVG icons; set i
 - **States:** default, navigation expanded, offline, dark mode.
 - **Accessibility:** landmark regions, logical focus order, visible skip link, no auto-focus theft.
 
+### Commuter-first hierarchy
+
+- **Default desktop order:** journey finder, labelled network search, planned/verified service board, and one selected-service map. The map is contextual to the selected journey and must not be duplicated by an all-network map in the same initial viewport.
+- **Coverage wording:** state `Klang Valley` once as coverage metadata. Do not repeat “KL / Klang Valley first” in the map, hero, and secondary monitor.
+- **Secondary monitor:** complete all-vehicle positions and feed health are available through a native, keyboard-operable disclosure after the commuter workflow. A shared `view`/filter URL opens that disclosure on load so a saved monitor link remains direct.
+- **Density:** use section rules, concise summaries, and one route-context panel instead of stacking marketing copy, metric cards, vehicle controls, and duplicate maps. Preserve the equivalent list for any interactive map content.
+
 ### CommandSearch
 
 - **Structure:** labelled input, mode/feed filters, result list, empty and error message. Results group scheduled trips, static routes, stops, and validated live vehicles without conflating their freshness states.
@@ -129,8 +136,43 @@ Use shadcn/ui primitives first. Use `@phosphor-icons/react` for SVG icons; set i
 - **Structure:** MapLibre canvas, SVG vehicle symbols, SVG route/station symbols, keyboard-accessible map controls, legend, list alternative.
 - **Variants:** route shape, vehicle cluster, selected vehicle, no-live-data.
 - **States:** loading tiles, loading vehicles, map unavailable, WebGL unavailable, reduced-data fallback.
-- **Accessibility:** offer “View as list”; markers are not the sole control surface. A selected marker opens the same detail panel as its list row.
+- **Accessibility:** offer “View as list”; markers are not the sole control surface. A selected marker opens the same detail panel as its list row. The Dashboard Network Overview also opens one replacement summary popup for a selected vehicle. The popup has a standard close control and Escape closes it without clearing the selected vehicle or moving focus from a list row.
 - **Commuter context:** selected vehicles show their current coordinates and next **scheduled** stop with planned time. This is never labelled as an ETA because upstream realtime data supplies positions, not arrival predictions.
+
+#### Civic map cartography
+
+The project-owned Civic map recipe is version controlled in
+`apps/web/src/lib/map-presentation.ts` and applied after MapLibre loads the official
+MapTiler `streets-v2` or `streets-v2-dark` base style. It intentionally keeps the
+provider's attribution, city labels, water, major roads, and rail orientation cues;
+it suppresses POI/address labels, reduces minor roads to `0.32` in light and `0.28`
+in dark, and reduces building fills to `0.10` in light and `0.13` in dark. A hosted
+MapTiler Map Designer style may later mirror this recipe, but the public runtime must
+not depend on unpublished account-side styling.
+
+| Layer | Zoom policy | Civic treatment |
+| --- | --- | --- |
+| Selected route casing | 7 / 11 / 15 | `5px` / `8px` / `12px`, neutral foreground, rounded cap/join, `0.82` official/derived or `0.72` approximate opacity. |
+| Selected route core | 7 / 11 / 15 | GTFS route colour at `2.5px` / `4px` / `6px`; an invalid/missing GTFS hex uses the primary Civic route fallback. Each resolved colour is checked against both Civic basemap anchors at the `3:1` non-text target. A colour that misses either anchor keeps its identity colour but forces an opaque neutral casing and route label, so a colour is never a status signal. |
+| Approximate alignment | same as route | Both casing and core are dashed. The visible detail text says `Approximate alignment`; it must not use the official treatment. |
+| Ordinary stop | 9 / 14 | Live-token dot at `3px` / `5px` with a surface stroke. |
+| Terminus | 9 / 14 | Surface-filled ring with live-token stroke at `5px` / `7px`. A selected stop or interchange marker is rendered only after corresponding verified static metadata is available. |
+| Selected next scheduled stop | 9 / 14 | An additional primary-token ring at `7px` / `10px`, rendered only when the selected vehicle's next published timetable stop has a matching static GTFS `stop_id` and coordinates. It does not replace the stop's terminus or ordinary treatment. |
+| Interchange | — | No marker is rendered until the API provides verified static interchange metadata. Do not infer an interchange from stop name, proximity, route mode, or map geometry. |
+| Route and stop labels | 11+ / 14+ | Official-route code follows the line with collision avoidance; stop names use variable anchors and collision avoidance. Derived and approximate geometry never inherits an official-only route label. |
+| Vehicle symbol | cluster to 12, symbol 13+ | At 40 or fewer vehicles use accessible Phosphor SVG buttons. Above that threshold use mode-aware MapLibre sprites and clusters; the equivalent list remains the keyboard control. Bus, MRT, LRT, Monorail, Rail, and Unclassified each have a distinct mode symbol in both renderers. These symbols identify normalized API mode only, never an operator fleet model. Live uses a solid circular form, stale uses a dashed square form plus visible status text. Bearing rotates only when it is finite and within 0–360°. Clusters remain count circles; selecting one only zooms the map and never implies a representative vehicle. |
+
+Selected-route GeoJSON is the only current route overlay, so there are no non-selected
+route layers to dim. Do not introduce inferred interchanges, rail routing, an ETA, or
+unlabelled map-only actions to simulate richer coverage.
+
+Each MapLibre `style.load`, including a base-style reload, reapplies the Civic basemap
+recipe and reconciles the custom scene once. Route, stop, cluster, and vehicle layers
+are removed before they are recreated; layer click handlers are removed with their
+layers. A selected vehicle's replacement popup is recreated against the refreshed map.
+This preserves selection without duplicate layers, handlers, or popups. A late tile
+error after the first successful style load does not replace an already usable map
+with a false `Map unavailable` fallback.
 
 ### FilterPanel and LocalFavourite
 
@@ -146,9 +188,24 @@ Each select keeps an “All” option, clears child filters when its parent chan
 has an inline no-results state.
 
 - **Network overview:** summary counts, MapLibre vehicle context, an equivalent
-  keyboard-accessible list, and selected-vehicle detail. Detail shows coordinates,
-  route/trip, GTFS agency, freshness label, and the next timetable stop; it never says
-  ETA. `Verified live`, `Live feed stale`, `Scheduled only`, and `Source unavailable`
+  keyboard-accessible list, and selected-vehicle detail. On desktop the map canvas is
+  followed in strict order by selected-vehicle detail, route-quality status, and
+  attribution. Detail shows coordinates, route/trip, GTFS agency, freshness label, and
+  the next timetable stop; it never says ETA. A map/WebGL fallback keeps that selected
+  detail after its inline notice so the map is never the only path.
+- **Vehicle popup:** selecting a single DOM marker, a de-clustered canvas symbol, or an
+  Equivalent List row opens one React-rendered MapLibre popup. It contains only mode,
+  vehicle label, feed, textual freshness, route/trip, and position-update timestamp.
+  Agency, coordinates, and next scheduled stop remain in the full detail below the map.
+  Popup content never uses unescaped HTML, ETA, predicted arrival, inferred travel time,
+  or fabricated location. A vehicle in the upper map half anchors its popup downward;
+  a lower vehicle anchors upward so the summary is not clipped by the canvas edge.
+- **Equivalent List scroll ownership:** heading, count, safety-cap, and request notices
+  remain in document flow. Only vehicle rows own a fixed `34rem` desktop scroll region,
+  with a stable scrollbar gutter and a pinned pagination footer. This prevents a large
+  result set from lengthening the page while preserving native keyboard access to every
+  row and to `Load more vehicles`.
+- `Verified live`, `Live feed stale`, `Scheduled only`, and `Source unavailable`
   always include text and semantic status treatment.
 - **Service health:** dense sortable table with feed, canonical operator, city, agency,
   normalized modes, static/realtime state, last successful fetch, and live/stale/
@@ -158,6 +215,12 @@ has an inline no-results state.
   switcher; the 1280px layout uses a 12-column split. A safety-cap notice offers
   “Load more vehicles”. Errors, empty data, partial coverage, SSE interruption, and
   map/WebGL failure use inline notices rather than modal-first recovery.
+
+The dashboard is a secondary, opt-in data layer on the commuter landing surface. Its
+workspace selector is a labelled pressed-button group, not incomplete ARIA tabs: it
+does not promise arrow-key tab behaviour that it does not implement. Network metric
+counts use a compact semantic definition list rather than decorative cards. Every
+custom vehicle-row button exposes the documented 3px focus ring.
 
 The product is read-only and public. Preserve Civic signal palette, IBM Plex, existing
 light/dark/system tokens, tinted surfaces, hairline borders, 0–4px radii, and 44px

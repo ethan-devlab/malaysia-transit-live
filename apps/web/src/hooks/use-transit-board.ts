@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useMemo } from "react"
 
 import { previewJourneys } from "@/data/previewTransit"
-import type { TransitJourney, TransitMode } from "@/domain/transit"
+import type { TransitJourney, TransitMode, VehicleMapMode } from "@/domain/transit"
 import { useLiveVehicles } from "@/hooks/use-live-vehicles"
 import {
   type DataStatus,
@@ -30,16 +30,20 @@ export interface RealtimeCoverage {
 }
 
 export interface ValidatedVehicle {
+  readonly bearing: number | null
   readonly feed: string
   readonly freshness: "live" | "stale"
   readonly id: string
   readonly label: string
   readonly latitude: number
   readonly longitude: number
+  readonly mode: VehicleMapMode
   readonly routeId: string
   readonly tripId: string
   readonly updatedAt: string
 }
+
+type VehicleMapInput = VehicleLocation & { readonly mode?: VehicleMapMode }
 
 const displayDateFormatter = new Intl.DateTimeFormat("en-MY", {
   day: "2-digit",
@@ -121,14 +125,16 @@ export function useTransitBoard(): TransitBoardData {
   }
 }
 
-export function toValidatedVehicle(vehicle: VehicleLocation): ValidatedVehicle {
+export function toValidatedVehicle(vehicle: VehicleMapInput): ValidatedVehicle {
   return {
+    bearing: vehicle.bearing,
     feed: vehicle.feed,
     freshness: vehicle.freshness,
     id: `${vehicle.feed}:${vehicle.vehicle_id}`,
     label: `Vehicle ${vehicle.vehicle_id}`,
     latitude: vehicle.latitude,
     longitude: vehicle.longitude,
+    mode: vehicle.mode ?? "unknown",
     routeId: vehicle.route_id,
     tripId: vehicle.trip_id,
     updatedAt: vehicle.fetched_at,

@@ -54,6 +54,7 @@ export function JourneyCard({
     <Card
       aria-labelledby={titleId}
       className={isSelected ? "border-primary bg-primary/5" : undefined}
+      role="group"
     >
       <CardHeader className="gap-3">
         <div className="flex items-start gap-3">
@@ -88,33 +89,29 @@ export function JourneyCard({
           </div>
         </div>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-y border-border py-3 text-sm">
-          <div className="flex gap-2">
-            <CalendarBlank aria-hidden="true" className="mt-0.5 text-muted-foreground" />
-            <div>
-              <dt className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
-                Service date
-              </dt>
-              <dd className="mt-1">
-                <time dateTime={journey.serviceDateIso}>{journey.serviceDate}</time>
-              </dd>
-            </div>
+          <div>
+            <dt className="flex items-center gap-2 font-mono text-xs tracking-wide text-muted-foreground uppercase">
+              <CalendarBlank aria-hidden="true" className="text-muted-foreground" />
+              Service date
+            </dt>
+            <dd className="mt-1 pl-6">
+              <time dateTime={journey.serviceDateIso}>{journey.serviceDate}</time>
+            </dd>
           </div>
-          <div className="flex gap-2">
-            <Clock aria-hidden="true" className="mt-0.5 text-muted-foreground" />
-            <div>
-              <dt className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
-                Planned
-              </dt>
-              <dd className="mt-1">
-                <time dateTime={`${journey.serviceDateIso}T${journey.plannedStart}:00+08:00`}>
-                  {journey.plannedStart}
-                </time>
-                –
-                <time dateTime={`${journey.serviceDateIso}T${journey.plannedEnd}:00+08:00`}>
-                  {journey.plannedEnd}
-                </time>
-              </dd>
-            </div>
+          <div>
+            <dt className="flex items-center gap-2 font-mono text-xs tracking-wide text-muted-foreground uppercase">
+              <Clock aria-hidden="true" className="text-muted-foreground" />
+              Planned
+            </dt>
+            <dd className="mt-1 pl-6">
+              <time dateTime={`${journey.serviceDateIso}T${journey.plannedStart}:00+08:00`}>
+                {journey.plannedStart}
+              </time>
+              –
+              <time dateTime={`${journey.serviceDateIso}T${journey.plannedEnd}:00+08:00`}>
+                {journey.plannedEnd}
+              </time>
+            </dd>
           </div>
           <div>
             <dt className="font-mono text-xs tracking-wide text-muted-foreground uppercase">

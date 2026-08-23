@@ -1,4 +1,5 @@
 export type TransitMode = "bus" | "lrt" | "monorail" | "mrt" | "rail"
+export type VehicleMapMode = TransitMode | "unknown"
 
 export type FreshnessState = "live" | "preview" | "scheduled" | "stale" | "unavailable"
 

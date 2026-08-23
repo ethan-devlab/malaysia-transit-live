@@ -34,6 +34,7 @@ const stateLabels = {
   unavailable: "Source unavailable",
 } as const
 
+// allow: SIZE_OK — one workspace state machine coordinates its views and local state.
 export function DashboardWorkspace({ isDark }: { readonly isDark: boolean }) {
   const [view, setView] = useState<WorkspaceView>(() => readView())
   const [filters, setFilters] = useState<DashboardFilterState>(() => readFilters())
@@ -78,6 +79,7 @@ export function DashboardWorkspace({ isDark }: { readonly isDark: boolean }) {
           freshness: vehicle.freshness,
           latitude: vehicle.latitude,
           longitude: vehicle.longitude,
+          mode: vehicle.mode,
           position_reported_at: vehicle.position_reported_at,
           route_id: vehicle.route_id,
           speed_metres_per_second: vehicle.speed_metres_per_second,
@@ -103,6 +105,7 @@ export function DashboardWorkspace({ isDark }: { readonly isDark: boolean }) {
     setExtraVehicles([])
     setNextCursor(null)
     setSelectedVehicleId("")
+    setFocus(undefined)
     writeUrl(view, next)
   }
 
@@ -126,40 +129,49 @@ export function DashboardWorkspace({ isDark }: { readonly isDark: boolean }) {
   }
 
   return (
-    <section aria-labelledby="dashboard-heading" className="mt-8 space-y-6">
+    <section aria-labelledby="dashboard-heading" className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-5">
         <div>
           <p className="font-mono text-xs font-semibold tracking-wide text-primary uppercase">
-            Dual-use monitor
+            Network monitor
           </p>
           <h2 id="dashboard-heading" className="mt-1 text-2xl font-semibold">
-            Malaysia network dashboard
+            Live vehicles and source health
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Read-only positions and feed health. Every service remains visible, including
-            scheduled-only coverage.
+            Complete filtered coverage for when you need to inspect all services, including
+            scheduled-only sources.
           </p>
         </div>
-        <div className="flex gap-2" role="tablist" aria-label="Dashboard workspace">
+        <fieldset className="flex gap-2">
+          <legend className="sr-only">Network monitor workspace</legend>
           <Button
-            aria-selected={view === "network"}
+            aria-pressed={view === "network"}
+            className={
+              view === "network"
+                ? "bg-[color:var(--action-hover)] hover:bg-[color:var(--action-primary)]"
+                : undefined
+            }
             onClick={() => changeView("network")}
-            role="tab"
             type="button"
             variant={view === "network" ? "default" : "outline"}
           >
             <MapTrifold aria-hidden="true" /> Network overview
           </Button>
           <Button
-            aria-selected={view === "health"}
+            aria-pressed={view === "health"}
+            className={
+              view === "health"
+                ? "bg-[color:var(--action-hover)] hover:bg-[color:var(--action-primary)]"
+                : undefined
+            }
             onClick={() => changeView("health")}
-            role="tab"
             type="button"
             variant={view === "health" ? "default" : "outline"}
           >
             <Table aria-hidden="true" /> Service health
           </Button>
-        </div>
+        </fieldset>
       </div>
       <DashboardFilters data={data} onChange={changeFilters} value={filters} />
       {dashboardQuery.isError ? (
@@ -242,12 +254,12 @@ function NetworkOverview({
   return (
     <div className="grid gap-6 xl:grid-cols-12">
       <div className="space-y-4 xl:col-span-7">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <dl className="grid grid-cols-2 border-y border-border sm:grid-cols-4 sm:divide-x sm:divide-border">
           <Metric label="Vehicles" value={data.summary.vehicle_count} />
           <Metric label="Verified live" value={data.summary.live_vehicle_count} />
           <Metric label="Stale" value={data.summary.stale_vehicle_count} />
           <Metric label="Feeds" value={data.summary.feed_count} />
-        </div>
+        </dl>
         <div className="flex items-center justify-between gap-3 sm:hidden">
           <p className="text-sm font-medium">{mapVisible ? "Map" : "Vehicle list"}</p>
           <Button onClick={onToggleMap} type="button" variant="outline">
@@ -256,8 +268,14 @@ function NetworkOverview({
         </div>
         <div className={mapVisible ? "block min-h-72" : "hidden sm:block"}>
           <NetworkMapPanel
+            afterMapCanvas={
+              selectedVehicle ? <SelectedVehicleDetail vehicle={selectedVehicle} /> : undefined
+            }
+            eyebrow="Network coverage"
             focus={focus}
+            heading="Live vehicle positions"
             isDark={isDark}
+            landmarkLabel="Dashboard network map"
             onSelectVehicle={(id) => {
               const vehicle = vehicles.find(
                 (candidate) => `${candidate.feed}:${candidate.vehicle_id}` === id,
@@ -265,6 +283,7 @@ function NetworkOverview({
               if (vehicle) onSelectVehicle(vehicle)
             }}
             selectedJourney={undefined}
+            showVehicleControls={false}
             vehicles={mapVehicles}
           />
         </div>
@@ -292,84 +311,109 @@ function NetworkOverview({
         {loadError ? (
           <InlineNotice tone="error">The next vehicle page could not be loaded.</InlineNotice>
         ) : null}
-        <ul className="space-y-2">
-          {vehicles.map((vehicle) => {
-            const id = `${vehicle.feed}:${vehicle.vehicle_id}`
-            return (
-              <li key={id}>
-                <button
-                  aria-pressed={
-                    selectedVehicle?.vehicle_id === vehicle.vehicle_id &&
-                    selectedVehicle.feed === vehicle.feed
-                  }
-                  className="flex min-h-16 w-full items-start justify-between gap-3 border border-border bg-muted/20 p-3 text-left hover:bg-muted/45"
-                  onClick={() => onSelectVehicle(vehicle)}
-                  type="button"
-                >
-                  <span>
-                    <span className="block font-medium">
-                      {vehicle.route_id || "Unclassified route"} · {vehicle.vehicle_id}
-                    </span>
-                    <span className="mt-1 block text-xs text-muted-foreground">
-                      {vehicle.operator_name} · {vehicle.region_name} · {modeLabels[vehicle.mode]}
-                    </span>
-                  </span>
-                  <StatusBadge
-                    status={vehicle.freshness === "live" ? "available" : "awaiting_first_fetch"}
-                  >
-                    {vehicle.freshness === "live" ? "Verified live" : "Live feed stale"}
-                  </StatusBadge>
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-        {hasMore ? (
-          <Button className="w-full" onClick={onLoadMore} type="button" variant="outline">
-            Load more vehicles
-          </Button>
-        ) : null}
-        {selectedVehicle ? (
-          <div className="border-t border-border pt-4">
-            <p className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
-              Selected vehicle
-            </p>
-            <h3 className="mt-1 font-semibold">{selectedVehicle.vehicle_id}</h3>
-            <div className="mt-2">
-              <StatusBadge status={selectedVehicle.freshness === "live" ? "live" : "stale"}>
-                {selectedVehicle.freshness === "live" ? "Verified live" : "Live feed stale"}
-              </StatusBadge>
+        <div className="grid h-[34rem] min-h-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden border border-border bg-muted/20">
+          <section
+            aria-label="Vehicle position rows"
+            className="min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]"
+          >
+            <ul className="space-y-2 p-3">
+              {vehicles.map((vehicle) => {
+                const id = `${vehicle.feed}:${vehicle.vehicle_id}`
+                return (
+                  <li key={id}>
+                    <button
+                      aria-pressed={
+                        selectedVehicle?.vehicle_id === vehicle.vehicle_id &&
+                        selectedVehicle.feed === vehicle.feed
+                      }
+                      className="flex min-h-16 w-full items-start justify-between gap-3 border border-border bg-muted/20 p-3 text-left hover:bg-muted/45 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--focus-ring)]"
+                      onClick={() => onSelectVehicle(vehicle)}
+                      type="button"
+                    >
+                      <span className="min-w-0">
+                        <span className="block break-words font-medium [overflow-wrap:anywhere]">
+                          {vehicle.route_id || "Unclassified route"} · {vehicle.vehicle_id}
+                        </span>
+                        <span className="mt-1 block break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                          {[
+                            vehicle.operator_name,
+                            vehicle.region_name,
+                            modeLabels[vehicle.mode],
+                          ].join(" · ")}
+                        </span>
+                      </span>
+                      <StatusBadge
+                        status={vehicle.freshness === "live" ? "available" : "awaiting_first_fetch"}
+                      >
+                        {vehicle.freshness === "live" ? "Verified live" : "Live feed stale"}
+                      </StatusBadge>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
+          {hasMore ? (
+            <div className="border-t border-border bg-[color:var(--surface-primary)] p-3 shadow-[0_-8px_16px_color-mix(in_srgb,var(--surface-primary)_85%,transparent)]">
+              <Button className="w-full" onClick={onLoadMore} type="button" variant="outline">
+                Load more vehicles
+              </Button>
             </div>
-            <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-              <div>
-                <dt className="text-muted-foreground">Coordinates</dt>
-                <dd className="font-mono">
-                  {selectedVehicle.latitude.toFixed(5)}, {selectedVehicle.longitude.toFixed(5)}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Route / trip</dt>
-                <dd>
-                  {selectedVehicle.route_id || "Unclassified"} /{" "}
-                  {selectedVehicle.trip_id || "Not reported"}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Agency</dt>
-                <dd>{selectedVehicle.agency_names.join(", ") || "Not in static metadata"}</dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Next scheduled stop</dt>
-                <dd>{selectedVehicle.next_scheduled_stop ?? "No timetable stop supplied"}</dd>
-              </div>
-            </dl>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Times and next stop are timetable/source timestamps, never ETA predictions.
-            </p>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </section>
     </div>
+  )
+}
+
+function SelectedVehicleDetail({ vehicle }: { readonly vehicle: DashboardVehicle }) {
+  return (
+    <section
+      aria-labelledby="selected-vehicle-heading"
+      className="border-t border-border pt-4"
+      data-selected-vehicle-detail=""
+    >
+      <p className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
+        Selected vehicle
+      </p>
+      <h3 className="mt-1 font-semibold" id="selected-vehicle-heading">
+        {vehicle.vehicle_id}
+      </h3>
+      <div className="mt-2">
+        <StatusBadge status={vehicle.freshness === "live" ? "live" : "stale"}>
+          {vehicle.freshness === "live" ? "Verified live" : "Live feed stale"}
+        </StatusBadge>
+      </div>
+      <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+        <div className="min-w-0">
+          <dt className="text-muted-foreground">Coordinates</dt>
+          <dd className="mt-0.5 font-mono">
+            {vehicle.latitude.toFixed(5)}, {vehicle.longitude.toFixed(5)}
+          </dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="text-muted-foreground">Route / trip</dt>
+          <dd className="mt-0.5 break-words [overflow-wrap:anywhere]">
+            {vehicle.route_id || "Unclassified"} / {vehicle.trip_id || "Not reported"}
+          </dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="text-muted-foreground">Agency</dt>
+          <dd className="mt-0.5 break-words [overflow-wrap:anywhere]">
+            {vehicle.agency_names.join(", ") || "Not in static metadata"}
+          </dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="text-muted-foreground">Next scheduled stop</dt>
+          <dd className="mt-0.5 break-words [overflow-wrap:anywhere]">
+            {vehicle.next_scheduled_stop ?? "No timetable stop supplied"}
+          </dd>
+        </div>
+      </dl>
+      <p className="mt-3 text-xs text-muted-foreground">
+        Times and next stop are timetable/source timestamps, never ETA predictions.
+      </p>
+    </section>
   )
 }
 
@@ -550,7 +594,7 @@ function StatusBadge({
 
 function Metric({ label, value }: { readonly label: string; readonly value: number }) {
   return (
-    <div className="border border-border bg-muted/20 p-3">
+    <div className="p-3 sm:px-4">
       <dt className="font-mono text-xs tracking-wide text-muted-foreground uppercase">{label}</dt>
       <dd className="mt-1 text-2xl font-semibold tabular-nums">{value}</dd>
     </div>

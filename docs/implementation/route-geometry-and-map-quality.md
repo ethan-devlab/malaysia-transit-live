@@ -431,9 +431,9 @@ Phase 2 is accepted only when all of the following are evidenced in a real brows
 
 #### Interaction and responsiveness
 
-- At 375 px and 768 px the map/list switcher exposes equivalent selection actions with
-  zero horizontal overflow.
 - At 1280 px the map and list/detail split preserves the documented 12-column hierarchy.
+- Phase 2 is desktop-only. Mobile and tablet map/list-switcher design and QA are deferred
+  to a later explicitly approved phase, rather than being implied by this desktop gate.
 - Keyboard users can reach map controls, switch to the list, select a vehicle or
   journey, and identify the current focus.
 - Selecting a route, stop, cluster, or vehicle does not steal focus or trap the user on
@@ -458,7 +458,7 @@ Phase 2 is accepted only when all of the following are evidenced in a real brows
 - Map-layer unit tests cover quality-to-style mapping, route-colour validation, valid
   bearing rotation, and reduced-motion duration.
 - Frontend test, check, and build commands pass.
-- Real-browser visual QA passes at 375 px, 768 px, and 1280 px for light/dark,
+- Real-browser visual QA passes at 1280 px for light/dark,
   official/derived/approximate/unavailable, selected/unselected, live/stale, loading,
   empty, and map-fallback states.
 - WCAG 2.2 AA contrast and visible-focus checks pass for controls, labels, status text,

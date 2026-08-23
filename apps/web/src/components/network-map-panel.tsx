@@ -2,24 +2,41 @@ import { MapTrifold, Warning } from "@phosphor-icons/react"
 import { useQuery } from "@tanstack/react-query"
 import maplibregl from "maplibre-gl"
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
-import type { NetworkFocus, TransitJourney } from "@/domain/transit"
+import { addVehicleMapMarker, type VehicleMapMarker } from "@/components/vehicle-map-marker"
+import { addVehicleMapPopup, type VehicleMapPopup } from "@/components/vehicle-map-popup"
+import type { NetworkFocus, TransitJourney, VehicleMapMode } from "@/domain/transit"
 import type { ValidatedVehicle } from "@/hooks/use-transit-board"
-import { shouldFallbackForMapError } from "@/lib/map-runtime"
+import {
+  type CivicMapTheme,
+  civicBasemapPatch,
+  civicMapStyleUrl,
+  mapMotionDuration,
+  routeColourContrastFor,
+  routeColourFor,
+  routePresentationFor,
+} from "@/lib/map-presentation"
+import { isMapStyleReady, shouldFallbackForMapError } from "@/lib/map-runtime"
 import { fetchTripDetail, type TripDetail } from "@/lib/transit-api"
 import { type MapRouteData, routeDataFor } from "@/lib/trip-route-data"
+import { installVehicleMapSprites } from "@/lib/vehicle-map-sprites"
 
 import "maplibre-gl/dist/maplibre-gl.css"
 
 maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
 interface NetworkMapPanelProps {
+  readonly afterMapCanvas?: ReactNode
+  readonly eyebrow: string
   readonly focus: NetworkFocus | undefined
+  readonly heading: string
   readonly isDark: boolean
+  readonly landmarkLabel: string
   readonly onSelectVehicle: (vehicleId: string) => void
   readonly selectedJourney: TransitJourney | undefined
+  readonly showVehicleControls: boolean
   readonly vehicles: readonly ValidatedVehicle[]
 }
 
@@ -31,6 +48,7 @@ interface TripTarget {
 }
 
 interface NextScheduledStop {
+  readonly id: string
   readonly name: string
   readonly time: string
 }
@@ -38,7 +56,11 @@ interface NextScheduledStop {
 interface VehicleFeatureCollection {
   readonly features: readonly {
     readonly geometry: { readonly coordinates: [number, number]; readonly type: "Point" }
-    readonly properties: { readonly freshness: "live" | "stale"; readonly vehicleId: string }
+    readonly properties: {
+      readonly freshness: "live" | "stale"
+      readonly mode: VehicleMapMode
+      readonly vehicleId: string
+    }
     readonly type: "Feature"
   }[]
   readonly type: "FeatureCollection"
@@ -50,7 +72,11 @@ const routeOfficialCasingLayerId = "selected-trip-official-casing"
 const routeOfficialLayerId = "selected-trip-official-line"
 const routeApproximateCasingLayerId = "selected-trip-approximate-casing"
 const routeApproximateLayerId = "selected-trip-approximate-line"
-const routeStopLayerId = "selected-trip-stops"
+const routeLabelLayerId = "selected-trip-route-label"
+const routeStopLayerId = "selected-trip-ordinary-stops"
+const routeSelectedStopLayerId = "selected-trip-next-scheduled-stop"
+const routeStopLabelLayerId = "selected-trip-stop-labels"
+const routeTerminusLayerId = "selected-trip-termini"
 const vehicleSourceId = "dashboard-vehicles"
 const vehicleClusterLayerId = "dashboard-vehicle-clusters"
 const vehicleClusterCountLayerId = "dashboard-vehicle-cluster-count"
@@ -59,20 +85,36 @@ const defaultVehicleLimit = 8
 const vehicleClusterThreshold = 40
 const emptyStyleImage = { data: new Uint8Array([0, 0, 0, 0]), height: 1, width: 1 }
 
+// allow: SIZE_OK — one MapLibre canvas lifecycle needs shared setup and teardown.
 export function NetworkMapPanel({
+  afterMapCanvas,
+  eyebrow,
   focus,
+  heading,
   isDark,
+  landmarkLabel,
   onSelectVehicle,
   selectedJourney,
+  showVehicleControls,
   vehicles,
 }: NetworkMapPanelProps) {
   const mapElement = useRef<HTMLDivElement>(null)
   const mapInstance = useRef<maplibregl.Map | null>(null)
-  const markerInstances = useRef<maplibregl.Marker[]>([])
+  const styleReadyMap = useRef<maplibregl.Map | null>(null)
+  const markerInstances = useRef<VehicleMapMarker[]>([])
+  const activeVehiclePopup = useRef<VehicleMapPopup | null>(null)
+  const activeVehiclePopupKey = useRef("")
   const focusedTripId = useRef("")
   const focusedVehicleId = useRef("")
   const [mapFailed, setMapFailed] = useState(false)
+  const [mapGeneration, setMapGeneration] = useState(0)
   const [mapLoaded, setMapLoaded] = useState(false)
+  const [styleGeneration, setStyleGeneration] = useState(0)
+  const removeActiveVehiclePopup = useCallback(() => {
+    activeVehiclePopup.current?.remove()
+    activeVehiclePopup.current = null
+    activeVehiclePopupKey.current = ""
+  }, [])
   const canRenderMap = Boolean(mapTilerKey) && !mapFailed
   const selectedVehicleId = focus?.kind === "vehicle" ? focus.id : ""
   const selectedVehicle = vehicles.find((vehicle) => vehicle.id === selectedVehicleId)
@@ -97,9 +139,16 @@ export function NetworkMapPanel({
       tripTarget?.serviceDate,
     ],
   })
-  const routeData = useMemo(() => routeDataFor(tripQuery.data), [tripQuery.data])
-  const routeColour = tripQuery.data?.route_color ? `#${tripQuery.data.route_color}` : undefined
   const nextStop = useMemo(() => nextScheduledStop(tripQuery.data), [tripQuery.data])
+  const routeData = useMemo(
+    () =>
+      routeDataFor(
+        tripQuery.data,
+        selectedVehicle && nextStop ? { selectedStopId: nextStop.id } : {},
+      ),
+    [nextStop, selectedVehicle, tripQuery.data],
+  )
+  const routeColour = tripQuery.data?.route_color ? `#${tripQuery.data.route_color}` : undefined
 
   useEffect(() => {
     if (!mapElement.current || !mapTilerKey || mapFailed) {
@@ -110,49 +159,70 @@ export function NetworkMapPanel({
       return undefined
     }
 
-    const styleName = isDark ? "streets-v2-dark" : "streets-v2"
+    const theme: CivicMapTheme = isDark ? "dark" : "light"
     const map = new maplibregl.Map({
       center: [101.6869, 3.139],
       container: mapElement.current,
       maxZoom: 16,
       minZoom: 7,
-      style: `https://api.maptiler.com/maps/${styleName}/style.json?key=${encodeURIComponent(mapTilerKey)}`,
+      style: civicMapStyleUrl(theme, mapTilerKey),
       zoom: 10,
     })
+    map.getCanvas().setAttribute("aria-label", `${landmarkLabel} canvas`)
     let hasLoaded = false
-    const onLoad = () => {
+    const onStyleLoad = () => {
       hasLoaded = true
       mapInstance.current = map
+      styleReadyMap.current = map
+      applyCivicBasemapTuning(map, theme)
       setMapLoaded(true)
+      setStyleGeneration((current) => current + 1)
     }
-
-    mapInstance.current = null
-    setMapLoaded(false)
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right")
-    map.on("styleimagemissing", (event) => {
+    const onStyleImageMissing = (event: { readonly id: string }) => {
       if (event.id === " " && !map.hasImage(event.id)) {
         map.addImage(event.id, emptyStyleImage)
       }
-    })
-    map.once("load", onLoad)
-    map.on("error", () => {
-      if (shouldFallbackForMapError(hasLoaded)) setMapFailed(true)
-    })
+    }
+    const onMapError = () => {
+      if (shouldFallbackForMapError(hasLoaded)) {
+        setMapFailed(true)
+      }
+    }
+
+    mapInstance.current = map
+    styleReadyMap.current = null
+    setMapGeneration((current) => current + 1)
+    focusedTripId.current = ""
+    focusedVehicleId.current = ""
+    setMapLoaded(false)
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right")
+    map.on("styleimagemissing", onStyleImageMissing)
+    map.on("style.load", onStyleLoad)
+    map.on("error", onMapError)
 
     return () => {
+      map.off("styleimagemissing", onStyleImageMissing)
+      map.off("style.load", onStyleLoad)
+      map.off("error", onMapError)
+      removeActiveVehiclePopup()
       markerInstances.current.forEach((marker) => {
         marker.remove()
       })
       markerInstances.current = []
-      mapInstance.current = null
+      if (styleReadyMap.current === map) {
+        styleReadyMap.current = null
+      }
+      if (mapInstance.current === map) {
+        mapInstance.current = null
+      }
       map.remove()
       setMapLoaded(false)
     }
-  }, [isDark, mapFailed])
+  }, [isDark, landmarkLabel, mapFailed, removeActiveVehiclePopup])
 
   useEffect(() => {
     const map = mapInstance.current
-    if (!mapLoaded || !map) {
+    if (!mapLoaded || styleGeneration === 0 || !isMapStyleReady(map, styleReadyMap.current)) {
       return
     }
     markerInstances.current.forEach((marker) => {
@@ -164,7 +234,7 @@ export function NetworkMapPanel({
       const vehicleData: VehicleFeatureCollection = {
         features: vehicles.map((vehicle) => ({
           geometry: { coordinates: [vehicle.longitude, vehicle.latitude], type: "Point" },
-          properties: { freshness: vehicle.freshness, vehicleId: vehicle.id },
+          properties: { freshness: vehicle.freshness, mode: vehicle.mode, vehicleId: vehicle.id },
           type: "Feature",
         })),
         type: "FeatureCollection",
@@ -174,21 +244,19 @@ export function NetworkMapPanel({
         if (mapInstance.current === map) removeClusterLayers()
       }
     }
-    markerInstances.current = vehicles.map((vehicle) => {
-      const marker = document.createElement("button")
-      marker.type = "button"
-      marker.className = markerClassName(vehicle, selectedVehicleId)
-      marker.setAttribute("aria-label", vehicleAriaLabel(vehicle))
-      marker.addEventListener("click", () => onSelectVehicle(vehicle.id))
-      return new maplibregl.Marker({ element: marker })
-        .setLngLat([vehicle.longitude, vehicle.latitude])
-        .addTo(map)
-    })
-  }, [mapLoaded, onSelectVehicle, selectedVehicleId, vehicles])
+    markerInstances.current = vehicles.map((vehicle) =>
+      addVehicleMapMarker(map, {
+        ariaLabel: vehicleAriaLabel(vehicle),
+        onSelect: onSelectVehicle,
+        selected: vehicle.id === selectedVehicleId,
+        vehicle,
+      }),
+    )
+  }, [mapLoaded, onSelectVehicle, selectedVehicleId, styleGeneration, vehicles])
 
   useEffect(() => {
     const map = mapInstance.current
-    if (!mapLoaded || !map) {
+    if (!mapLoaded || styleGeneration === 0 || !isMapStyleReady(map, styleReadyMap.current)) {
       return
     }
     if (routeData.features.length === 0) {
@@ -200,11 +268,16 @@ export function NetworkMapPanel({
       focusedTripId.current = tripTarget.id
       focusRoute(map, routeData)
     }
-  }, [mapLoaded, routeColour, routeData, tripTarget])
+  }, [mapLoaded, routeColour, routeData, styleGeneration, tripTarget])
 
   useEffect(() => {
     const map = mapInstance.current
-    if (!mapLoaded || !map || !selectedVehicle) {
+    if (
+      !mapLoaded ||
+      mapGeneration === 0 ||
+      !isMapStyleReady(map, styleReadyMap.current) ||
+      !selectedVehicle
+    ) {
       return
     }
     const vehicleFocusId = `${selectedVehicle.id}:${focus?.revision ?? 0}`
@@ -218,27 +291,69 @@ export function NetworkMapPanel({
       essential: true,
       zoom: Math.max(map.getZoom(), 13),
     })
-  }, [focus?.revision, mapLoaded, selectedVehicle])
+  }, [focus?.revision, mapGeneration, mapLoaded, selectedVehicle])
+
+  useEffect(() => {
+    const map = mapInstance.current
+    removeActiveVehiclePopup()
+    if (
+      !mapLoaded ||
+      mapGeneration === 0 ||
+      styleGeneration === 0 ||
+      !isMapStyleReady(map, styleReadyMap.current) ||
+      !selectedVehicle
+    ) {
+      return undefined
+    }
+
+    const popupKey = `${selectedVehicle.id}:${focus?.revision ?? 0}`
+    activeVehiclePopupKey.current = popupKey
+    activeVehiclePopup.current = addVehicleMapPopup(map, selectedVehicle, () => {
+      if (activeVehiclePopupKey.current === popupKey) {
+        activeVehiclePopup.current = null
+        activeVehiclePopupKey.current = ""
+      }
+    })
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        removeActiveVehiclePopup()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown)
+      if (activeVehiclePopupKey.current === popupKey) {
+        removeActiveVehiclePopup()
+      }
+    }
+  }, [
+    focus?.revision,
+    mapGeneration,
+    mapLoaded,
+    removeActiveVehiclePopup,
+    selectedVehicle,
+    styleGeneration,
+  ])
 
   return (
-    <section aria-labelledby="network-map-heading" className="min-w-0 space-y-3">
+    <section aria-label={landmarkLabel} className="min-w-0 space-y-3">
       <div className="flex items-baseline justify-between gap-4">
         <div>
           <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-            KL / Klang Valley first
+            {eyebrow}
           </p>
-          <h2 id="network-map-heading" className="mt-1 text-xl font-semibold">
-            Network view
-          </h2>
+          <h2 className="mt-1 text-xl font-semibold">{heading}</h2>
         </div>
         <MapTrifold aria-hidden="true" className="text-primary" size={26} weight="duotone" />
       </div>
       {canRenderMap ? (
         <>
           <div
-            className="h-[28rem] w-full overflow-hidden rounded-sm border border-border md:h-[34rem] xl:h-[calc(100dvh-10rem)] xl:min-h-[42rem] xl:max-h-[52rem]"
+            className="h-[28rem] w-full overflow-hidden rounded-sm border border-border md:h-[34rem] xl:h-[34rem] xl:min-h-[34rem] xl:max-h-[38rem]"
             ref={mapElement}
           />
+          {afterMapCanvas}
           <MapStatus
             geometry={tripQuery.data?.geometry}
             hasTripTarget={tripTarget !== undefined}
@@ -253,25 +368,29 @@ export function NetworkMapPanel({
           </p>
         </>
       ) : (
-        <div className="flex min-h-72 flex-col justify-center border border-dashed border-border bg-muted/45 p-5 sm:min-h-96">
-          <Warning
-            aria-hidden="true"
-            className="mb-4 text-[color:var(--status-warning-foreground)]"
-            size={28}
-            weight="duotone"
-          />
-          <p className="text-lg font-semibold">
-            {mapFailed ? "Map unavailable" : "Map configuration required"}
-          </p>
-          <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
-            {mapFailed
-              ? "The map could not be started on this device. The complete service board remains available without it."
-              : "Set the restricted MapTiler browser key before deployment. The complete service board remains available without a map."}
-          </p>
-        </div>
+        <>
+          <div className="flex min-h-72 flex-col justify-center border border-dashed border-border bg-muted/45 p-5 sm:min-h-96">
+            <Warning
+              aria-hidden="true"
+              className="mb-4 text-[color:var(--status-warning-foreground)]"
+              size={28}
+              weight="duotone"
+            />
+            <p className="text-lg font-semibold">
+              {mapFailed ? "Map unavailable" : "Map configuration required"}
+            </p>
+            <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
+              {mapFailed
+                ? "The map could not be started on this device. The complete service board remains available without it."
+                : "Set the restricted MapTiler browser key before deployment. The complete service board remains available without a map."}
+            </p>
+          </div>
+          {afterMapCanvas}
+        </>
       )}
-      {vehicles.length > 0 ? (
+      {showVehicleControls && vehicles.length > 0 ? (
         <VehicleControls
+          landmarkLabel={landmarkLabel}
           nextStop={nextStop}
           nextStopUnavailableReason={
             selectedVehicle && !selectedVehicle.tripId
@@ -378,6 +497,7 @@ function MapStatus({
 }
 
 interface VehicleControlsProps {
+  readonly landmarkLabel: string
   readonly nextStop: NextScheduledStop | undefined
   readonly nextStopUnavailableReason: string | undefined
   readonly onSelect: (vehicleId: string) => void
@@ -387,6 +507,7 @@ interface VehicleControlsProps {
 }
 
 function VehicleControls({
+  landmarkLabel,
   nextStop,
   nextStopUnavailableReason,
   onSelect,
@@ -400,7 +521,7 @@ function VehicleControls({
 
   return (
     <section
-      aria-label="Validated vehicle locations"
+      aria-label={`${landmarkLabel} vehicle locations`}
       className="border border-border bg-muted/20 p-3 text-sm"
     >
       <div className="flex items-start justify-between gap-3">
@@ -512,6 +633,7 @@ function nextScheduledStop(tripDetail: TripDetail | undefined): NextScheduledSto
     return undefined
   }
   return {
+    id: stop.stop_id,
     name: stop.name,
     time: stop.departure_time || stop.arrival_time,
   }
@@ -569,71 +691,177 @@ function addOrUpdateRouteLayers(
   routeData: MapRouteData,
   gtfsRouteColour: string | undefined,
 ) {
-  const routeColour = gtfsRouteColour ?? cssToken("--action-primary")
-  if (!routeColour) {
-    return
-  }
+  const actionColour = cssToken("--action-primary")
   const stopColour = cssToken("--status-live")
   const stopStrokeColour = cssToken("--surface-primary")
   const routeCasingColour = cssToken("--text-primary")
-  if (!routeColour || !routeCasingColour || !stopColour || !stopStrokeColour) {
+  if (!actionColour || !routeCasingColour || !stopColour || !stopStrokeColour) {
     return
   }
   const routeQuality = routeData.features.find((feature) => feature.geometry.type === "LineString")
     ?.properties.quality
+  const routePresentation = routePresentationFor(routeQuality ?? "unavailable")
+  const routeColour = routeColourFor(gtfsRouteColour, actionColour)
+  const routeCasingOpacity = routeColourContrastFor(routeColour).requiresCasingSupport
+    ? 1
+    : routePresentation.casingOpacity
 
   removeRouteLayers(map)
   map.addSource(routeSourceId, { data: routeData, type: "geojson" })
-  if (routeQuality === "official_shape" || routeQuality === "matched_infrastructure") {
+  if (routePresentation.shouldRenderLine && routePresentation.isApproximate) {
     map.addLayer({
-      id: routeOfficialCasingLayerId,
-      layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": routeCasingColour, "line-opacity": 0.7, "line-width": 8 },
-      source: routeSourceId,
-      type: "line",
-    })
-    map.addLayer({
-      id: routeOfficialLayerId,
-      layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": routeColour, "line-width": 4 },
-      source: routeSourceId,
-      type: "line",
-    })
-  } else if (routeQuality === "stop_sequence") {
-    map.addLayer({
+      filter: ["==", ["get", "featureKind"], "route"],
       id: routeApproximateCasingLayerId,
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
         "line-color": routeCasingColour,
         "line-dasharray": [2, 2],
-        "line-opacity": 0.7,
-        "line-width": 8,
+        "line-opacity": routeCasingOpacity,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 5, 11, 8, 15, 12],
       },
       source: routeSourceId,
       type: "line",
     })
     map.addLayer({
+      filter: ["==", ["get", "featureKind"], "route"],
       id: routeApproximateLayerId,
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": routeColour, "line-dasharray": [2, 2], "line-width": 4 },
+      paint: {
+        "line-color": routeColour,
+        "line-dasharray": [2, 2],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2.5, 11, 4, 15, 6],
+      },
+      source: routeSourceId,
+      type: "line",
+    })
+  } else if (routePresentation.shouldRenderLine) {
+    map.addLayer({
+      filter: ["==", ["get", "featureKind"], "route"],
+      id: routeOfficialCasingLayerId,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": routeCasingColour,
+        "line-opacity": routeCasingOpacity,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 5, 11, 8, 15, 12],
+      },
+      source: routeSourceId,
+      type: "line",
+    })
+    map.addLayer({
+      filter: ["==", ["get", "featureKind"], "route"],
+      id: routeOfficialLayerId,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": routeColour,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7, 2.5, 11, 4, 15, 6],
+      },
       source: routeSourceId,
       type: "line",
     })
   }
   map.addLayer({
+    filter: [
+      "all",
+      ["==", ["get", "featureKind"], "stop"],
+      ["==", ["get", "stopKind"], "ordinary"],
+    ],
     id: routeStopLayerId,
     paint: {
       "circle-color": stopColour,
-      "circle-radius": 4,
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 3, 14, 5],
       "circle-stroke-color": stopStrokeColour,
-      "circle-stroke-width": 1,
+      "circle-stroke-width": 1.25,
     },
     source: routeSourceId,
     type: "circle",
   })
+  map.addLayer({
+    filter: [
+      "all",
+      ["==", ["get", "featureKind"], "stop"],
+      ["==", ["get", "stopKind"], "terminus"],
+    ],
+    id: routeTerminusLayerId,
+    paint: {
+      "circle-color": stopStrokeColour,
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 5, 14, 7],
+      "circle-stroke-color": stopColour,
+      "circle-stroke-width": 2.25,
+    },
+    source: routeSourceId,
+    type: "circle",
+  })
+  map.addLayer({
+    filter: ["all", ["==", ["get", "featureKind"], "stop"], ["==", ["get", "isSelected"], true]],
+    id: routeSelectedStopLayerId,
+    paint: {
+      "circle-color": stopStrokeColour,
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 7, 14, 10],
+      "circle-stroke-color": actionColour,
+      "circle-stroke-width": 3,
+    },
+    source: routeSourceId,
+    type: "circle",
+  })
+  if (routeQuality === "official_shape") {
+    map.addLayer({
+      filter: ["==", ["get", "featureKind"], "route"],
+      id: routeLabelLayerId,
+      layout: {
+        "symbol-placement": "line",
+        "symbol-spacing": 500,
+        "text-allow-overlap": false,
+        "text-field": ["get", "routeLabel"],
+        "text-keep-upright": true,
+        "text-max-angle": 30,
+        "text-padding": 4,
+        "text-size": ["interpolate", ["linear"], ["zoom"], 11, 11, 14, 13],
+      },
+      minzoom: 11,
+      paint: {
+        "text-color": routeCasingColour,
+        "text-halo-color": stopStrokeColour,
+        "text-halo-width": 1.25,
+      },
+      source: routeSourceId,
+      type: "symbol",
+    })
+  }
+  map.addLayer({
+    filter: ["==", ["get", "featureKind"], "stop"],
+    id: routeStopLabelLayerId,
+    layout: {
+      "text-allow-overlap": false,
+      "text-field": ["get", "stopName"],
+      "text-offset": [0, 1.1],
+      "text-padding": 4,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 14, 11, 16, 12],
+      "text-variable-anchor": ["top", "bottom", "left", "right"],
+    },
+    minzoom: 14,
+    paint: {
+      "text-color": routeCasingColour,
+      "text-halo-color": stopStrokeColour,
+      "text-halo-width": 1,
+    },
+    source: routeSourceId,
+    type: "symbol",
+  })
 }
 
 function removeRouteLayers(map: maplibregl.Map) {
+  if (map.getLayer(routeStopLabelLayerId)) {
+    map.removeLayer(routeStopLabelLayerId)
+  }
+  if (map.getLayer(routeLabelLayerId)) {
+    map.removeLayer(routeLabelLayerId)
+  }
+  if (map.getLayer(routeTerminusLayerId)) {
+    map.removeLayer(routeTerminusLayerId)
+  }
+  if (map.getLayer(routeSelectedStopLayerId)) {
+    map.removeLayer(routeSelectedStopLayerId)
+  }
   if (map.getLayer(routeStopLayerId)) {
     map.removeLayer(routeStopLayerId)
   }
@@ -666,9 +894,15 @@ function addVehicleClusterLayers(
   if (!liveColour || !warningColour || !surfaceColour || !textColour) {
     return () => undefined
   }
+  installVehicleMapSprites(map, {
+    live: liveColour,
+    stale: warningColour,
+    surface: surfaceColour,
+    text: textColour,
+  })
   map.addSource(vehicleSourceId, {
     cluster: true,
-    clusterMaxZoom: 14,
+    clusterMaxZoom: 12,
     clusterRadius: 48,
     clusterProperties: {
       live_count: ["+", ["case", ["==", ["get", "freshness"], "live"], 1, 0]],
@@ -677,6 +911,7 @@ function addVehicleClusterLayers(
     type: "geojson",
   })
   map.addLayer({
+    filter: ["has", "point_count"],
     id: vehicleClusterLayerId,
     paint: {
       "circle-color": [
@@ -693,6 +928,7 @@ function addVehicleClusterLayers(
     type: "circle",
   })
   map.addLayer({
+    filter: ["has", "point_count"],
     id: vehicleClusterCountLayerId,
     layout: { "text-field": ["get", "point_count_abbreviated"], "text-size": 12 },
     paint: { "text-color": textColour },
@@ -702,14 +938,13 @@ function addVehicleClusterLayers(
   map.addLayer({
     filter: ["!", ["has", "point_count"]],
     id: vehiclePointLayerId,
-    paint: {
-      "circle-color": ["case", ["==", ["get", "freshness"], "live"], liveColour, warningColour],
-      "circle-radius": 7,
-      "circle-stroke-color": surfaceColour,
-      "circle-stroke-width": 2,
+    layout: {
+      "icon-allow-overlap": true,
+      "icon-image": ["concat", "vehicle-symbol-", ["get", "mode"], "-", ["get", "freshness"]],
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.72, 14, 1],
     },
     source: vehicleSourceId,
-    type: "circle",
+    type: "symbol",
   })
   const onClusterClick = (event: maplibregl.MapMouseEvent) => {
     map.easeTo({
@@ -764,20 +999,11 @@ function focusRoute(map: maplibregl.Map, routeData: MapRouteData) {
   map.fitBounds(bounds, { duration: motionDuration(), maxZoom: 14, padding: 48 })
 }
 
-function markerClassName(vehicle: ValidatedVehicle, selectedVehicleId: string): string {
-  const base =
-    "grid size-11 cursor-pointer place-items-center bg-transparent before:block before:size-4 before:rounded-full before:border-2 before:border-white focus-visible:outline-3 focus-visible:outline-offset-2"
-  if (vehicle.id === selectedVehicleId) {
-    return `${base} before:bg-primary before:ring-2 before:ring-primary/40`
-  }
-  return vehicle.freshness === "live"
-    ? `${base} before:bg-[color:var(--status-live)]`
-    : `${base} before:bg-[color:var(--status-warning)]`
-}
-
 function vehicleAriaLabel(vehicle: ValidatedVehicle): string {
   const state = vehicle.freshness === "live" ? "verified live" : "last verified position is stale"
-  return `${vehicle.label} from ${vehicle.feed}; ${state}; updated ${formatAge(vehicle.updatedAt)} ago.`
+  const mode =
+    vehicle.mode === "unknown" ? "unclassified mode" : `${vehicle.mode.toUpperCase()} mode`
+  return `${vehicle.label} from ${vehicle.feed}; ${mode}; ${state}; updated ${formatAge(vehicle.updatedAt)} ago.`
 }
 
 function formatAge(updatedAt: string): string {
@@ -795,6 +1021,25 @@ function cssToken(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 }
 
+function applyCivicBasemapTuning(map: maplibregl.Map, theme: CivicMapTheme): void {
+  for (const layer of map.getStyle().layers) {
+    const sourceLayer =
+      "source-layer" in layer && typeof layer["source-layer"] === "string"
+        ? layer["source-layer"]
+        : undefined
+    const patch = civicBasemapPatch({ id: layer.id, sourceLayer, type: layer.type }, theme)
+    if (patch?.kind === "visibility") {
+      map.setLayoutProperty(layer.id, "visibility", patch.visibility)
+    }
+    if (patch?.kind === "fill-opacity") {
+      map.setPaintProperty(layer.id, "fill-opacity", patch.opacity)
+    }
+    if (patch?.kind === "line-opacity") {
+      map.setPaintProperty(layer.id, "line-opacity", patch.opacity)
+    }
+  }
+}
+
 function localServiceDate(): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     day: "2-digit",
@@ -807,7 +1052,7 @@ function localServiceDate(): string {
 }
 
 function motionDuration(): number {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 200
+  return mapMotionDuration(window.matchMedia("(prefers-reduced-motion: reduce)").matches)
 }
 
 function supportsWebGl(): boolean {
