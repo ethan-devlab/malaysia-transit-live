@@ -30,7 +30,7 @@ from transit.http.schemas import (
 )
 from transit.http.status_api import VEHICLE_RETENTION_SECONDS, vehicle_location
 from transit.models import GtfsRoute, GtfsService, GtfsStop, GtfsStopTime, GtfsTrip, VehicleSnapshot
-from transit.services.trip_geometry import resolve_trip_geometry
+from transit.services.trip_geometry import matched_infrastructure_geometry, resolve_trip_geometry
 
 router = Router()
 MINIMUM_SEARCH_LENGTH = 2
@@ -175,6 +175,7 @@ def trip_detail(
             for stop in trip_stops
             if stop.latitude is not None and stop.longitude is not None
         ),
+        matched_infrastructure_geometry(version, trip),
     )
     return TripDetail(
         trip_id=trip.trip_id,
@@ -191,6 +192,11 @@ def trip_detail(
             source=geometry.source,
             source_version=geometry.source_version,
             attribution=geometry.attribution,
+            attribution_url=geometry.attribution_url,
+            derivation_version=geometry.derivation_version,
+            derived_at=geometry.derived_at,
+            infrastructure_content_sha256=geometry.infrastructure_content_sha256,
+            infrastructure_snapshot=geometry.infrastructure_snapshot,
         ),
         stops=trip_stops,
         source=source_metadata(feed, version),

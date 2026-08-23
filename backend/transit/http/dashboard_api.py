@@ -73,7 +73,11 @@ def _mode_for_snapshot(snapshot: VehicleSnapshot, routes: dict[tuple[str, str], 
 
 
 def _freshness(snapshot: VehicleSnapshot, now: datetime) -> str:
-    return "live" if snapshot.fetched_at >= now - timedelta(seconds=LIVE_FRESHNESS_SECONDS) else "stale"
+    return (
+        "live"
+        if snapshot.fetched_at >= now - timedelta(seconds=LIVE_FRESHNESS_SECONDS)
+        else "stale"
+    )
 
 
 def _next_scheduled_stops(
@@ -122,6 +126,7 @@ def _geometry_coverage(version: StaticFeedVersion | None) -> DashboardGeometryCo
             matched_infrastructure_count=0,
             stop_sequence_count=0,
             unavailable_count=0,
+            matched_infrastructure_derived_at=None,
         )
     trip_count = int(version.record_counts.get("trips", 0))
     trips_with_shape = int(version.record_counts.get("trips_with_shape", 0))
@@ -130,9 +135,20 @@ def _geometry_coverage(version: StaticFeedVersion | None) -> DashboardGeometryCo
     return DashboardGeometryCoverage(
         trip_count=trip_count,
         official_shape_count=official_shape_count,
-        matched_infrastructure_count=0,
-        stop_sequence_count=max(0, trip_count - official_shape_count),
+        matched_infrastructure_count=min(
+            max(0, trip_count - official_shape_count),
+            int(version.record_counts.get("matched_infrastructure_count", 0)),
+        ),
+        stop_sequence_count=max(
+            0,
+            trip_count
+            - official_shape_count
+            - int(version.record_counts.get("matched_infrastructure_count", 0)),
+        ),
         unavailable_count=0,
+        matched_infrastructure_derived_at=version.record_counts.get(
+            "matched_infrastructure_derived_at"
+        ),
     )
 
 
@@ -161,7 +177,9 @@ def dashboard(
     routes = list(GtfsRoute.objects.filter(feed_version_id__in=version_ids))
     agencies = list(GtfsAgency.objects.filter(feed_version_id__in=version_ids))
     route_map = {(str(route.feed_version_id), route.route_id): route for route in routes}
-    agency_map = {(str(agency.feed_version_id), agency.agency_id): agency.name for agency in agencies}
+    agency_map = {
+        (str(agency.feed_version_id), agency.agency_id): agency.name for agency in agencies
+    }
     agencies_by_version: dict[str, set[str]] = {}
     for agency in agencies:
         agencies_by_version.setdefault(str(agency.feed_version_id), set()).add(agency.name)
@@ -193,7 +211,9 @@ def dashboard(
     for feed in feeds:
         version = versions_by_feed.get(feed.id)
         version_key = str(version.id) if version else ""
-        modes = {dashboard_mode(route, feed.slug) for route in routes_by_version.get(version_key, [])}
+        modes = {
+            dashboard_mode(route, feed.slug) for route in routes_by_version.get(version_key, [])
+        }
         source_modes[feed.id] = modes
     for snapshot in snapshot_query.iterator(chunk_size=1000):
         snapshot_mode = _mode_for_snapshot(snapshot, route_map)
@@ -253,8 +273,12 @@ def dashboard(
                 position_reported_at=snapshot.position_reported_at,
                 fetched_at=snapshot.fetched_at,
                 freshness=_freshness(snapshot, now),
-                static_version_id=str(snapshot.feed_version_id) if snapshot.feed_version_id else None,
-                next_scheduled_stop=next_stops.get((str(snapshot.feed_version_id), snapshot.trip_id)),
+                static_version_id=str(snapshot.feed_version_id)
+                if snapshot.feed_version_id
+                else None,
+                next_scheduled_stop=next_stops.get(
+                    (str(snapshot.feed_version_id), snapshot.trip_id)
+                ),
             ),
         )
 
@@ -275,7 +299,9 @@ def dashboard(
                 operator_name=feed.operator_name or feed.display_name,
                 region_key=feed.region_key or "unknown",
                 region_name=feed.region_name or "Unclassified",
-                agency_names=sorted(agencies_by_version.get(str(version.id), set())) if version else [],
+                agency_names=sorted(agencies_by_version.get(str(version.id), set()))
+                if version
+                else [],
                 modes=sorted(source_modes.get(feed.id, set())),
                 static_state="active" if version else "unavailable",
                 realtime_state=_realtime_state(
@@ -304,20 +330,26 @@ def dashboard(
         live_vehicle_count=total_live_vehicle_count,
         stale_vehicle_count=total_stale_vehicle_count,
         unknown_vehicle_count=total_unknown_vehicle_count,
-        scheduled_only_feed_count=sum(source.realtime_state == "scheduled_only" for source in source_rows),
-        unavailable_feed_count=sum(source.realtime_state == "unavailable" for source in source_rows),
+        scheduled_only_feed_count=sum(
+            source.realtime_state == "scheduled_only" for source in source_rows
+        ),
+        unavailable_feed_count=sum(
+            source.realtime_state == "unavailable" for source in source_rows
+        ),
         awaiting_first_fetch_feed_count=sum(
             source.realtime_state == "awaiting_first_fetch" for source in source_rows
         ),
     )
     operator_options = {
-        (feed.operator_key or feed.slug, feed.operator_name or feed.display_name)
-        for feed in feeds
+        (feed.operator_key or feed.slug, feed.operator_name or feed.display_name) for feed in feeds
     }
     region_options = {
         (feed.region_key or "unknown", feed.region_name or "Unclassified") for feed in feeds
     }
-    mode_options = {(mode_key, mode_key.replace("_", " ").title()) for mode_key in ("bus", "mrt", "lrt", "monorail", "rail", "unknown")}
+    mode_options = {
+        (mode_key, mode_key.replace("_", " ").title())
+        for mode_key in ("bus", "mrt", "lrt", "monorail", "rail", "unknown")
+    }
     mode_counts = {
         mode_key: sum(mode_key in source_modes.get(feed.id, set()) for feed in filtered_feeds)
         for mode_key, _ in mode_options
@@ -329,9 +361,7 @@ def dashboard(
         for operator_key, _ in operator_options
     }
     region_counts = {
-        region_key: sum(
-            (feed.region_key or "unknown") == region_key for feed in filtered_feeds
-        )
+        region_key: sum((feed.region_key or "unknown") == region_key for feed in filtered_feeds)
         for region_key, _ in region_options
     }
     return DashboardResponse(

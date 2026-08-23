@@ -16,9 +16,16 @@ from transit.models.gtfs import (
     GtfsStopTime,
     GtfsTrip,
 )
+from transit.models.infrastructure import (
+    DerivedTripAlignment,
+    RailInfrastructureEdge,
+    RailInfrastructureNode,
+    RailInfrastructureSnapshot,
+)
 from transit.models.realtime import VehicleSnapshot
 
 __all__ = [
+    "DerivedTripAlignment",
     "GtfsAgency",
     "GtfsRoute",
     "GtfsService",
@@ -27,6 +34,9 @@ __all__ = [
     "GtfsStop",
     "GtfsStopTime",
     "GtfsTrip",
+    "RailInfrastructureEdge",
+    "RailInfrastructureNode",
+    "RailInfrastructureSnapshot",
     "StaticFeedVersion",
     "StaticImportIssue",
     "TransitFeed",

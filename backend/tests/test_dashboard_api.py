@@ -115,6 +115,7 @@ def test_dashboard_uses_materialised_geometry_coverage_without_trip_scans() -> N
         "trip_count": 120,
         "official_shape_count": 118,
         "matched_infrastructure_count": 0,
+        "matched_infrastructure_derived_at": None,
         "stop_sequence_count": 2,
         "unavailable_count": 0,
     }

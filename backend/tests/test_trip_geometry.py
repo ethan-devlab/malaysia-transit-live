@@ -4,15 +4,18 @@ import pytest
 from django.db import connection
 from django.test import Client, RequestFactory, override_settings
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 
 from transit.http.network_api import trip_detail
 from transit.models import (
+    DerivedTripAlignment,
     GtfsRoute,
     GtfsService,
     GtfsShapePoint,
     GtfsStop,
     GtfsStopTime,
     GtfsTrip,
+    RailInfrastructureSnapshot,
     StaticFeedVersion,
     TransitFeed,
 )
@@ -132,6 +135,11 @@ def test_trip_detail_returns_official_gtfs_geometry_and_normalised_colours() -> 
         "source": "gtfs",
         "source_version": str(version.id),
         "attribution": None,
+        "attribution_url": None,
+        "derivation_version": None,
+        "derived_at": None,
+        "infrastructure_content_sha256": None,
+        "infrastructure_snapshot": None,
     }
     assert "eta" not in response.content.decode().lower()
 
@@ -142,7 +150,12 @@ def test_resolver_orders_official_then_matched_then_stop_sequence_then_unavailab
     stops = ((101.6, 3.1), (101.7, 3.2))
     matched = ResolvedTripGeometry(
         attribution="OpenStreetMap contributors",
+        attribution_url="https://www.openstreetmap.org/copyright",
         coordinates=((101.6, 3.1), (101.65, 3.14), (101.7, 3.2)),
+        derivation_version="ktmb-osm-rail-v1",
+        derived_at="2026-08-23T00:00:00+00:00",
+        infrastructure_content_sha256="a" * 64,
+        infrastructure_snapshot="1",
         quality="matched_infrastructure",
         shape_id=None,
         source="derived_infrastructure",
@@ -172,6 +185,65 @@ def test_resolver_orders_official_then_matched_then_stop_sequence_then_unavailab
         ]
     )
     assert resolve_trip_geometry(version, trip, stops, matched).quality == "official_shape"
+
+
+@pytest.mark.django_db
+@override_settings(LOCAL_ONLY=True)
+def test_given_invalidated_alignment_when_reading_trip_detail_then_falls_back() -> None:
+    feed, version, trip = _scheduled_trip("ktmb-derived", shape_id="")
+    snapshot = RailInfrastructureSnapshot.objects.create(
+        attribution="© OpenStreetMap contributors",
+        attribution_url="https://www.openstreetmap.org/copyright",
+        content_sha256="b" * 64,
+        geographic_extent={"min_latitude": 3.1},
+        graph_schema_version="osm-way-graph-v1",
+        licence_name="Open Data Commons Open Database License (ODbL) v1.0",
+        provider_name="OpenStreetMap",
+        source_captured_at=timezone.now(),
+        source_url="https://overpass-api.de/api/interpreter",
+    )
+    DerivedTripAlignment.objects.create(
+        coordinates=[[101.6, 3.1], [101.65, 3.14], [101.7, 3.2]],
+        derivation_version="ktmb-osm-rail-v1",
+        matcher_config_sha256="c" * 64,
+        metrics={"confidence": 1.0},
+        snapshot=snapshot,
+        static_feed_version=version,
+        status=DerivedTripAlignment.Status.ACCEPTED,
+        trip=trip,
+    )
+
+    derived_response = Client().get(
+        f"/api/v1/trips/{feed.slug}/{trip.trip_id}",
+        {"service_date": "2026-08-07"},
+    )
+    snapshot.status = RailInfrastructureSnapshot.Status.INVALID
+    snapshot.save(update_fields=("status",))
+    fallback_response = Client().get(
+        f"/api/v1/trips/{feed.slug}/{trip.trip_id}",
+        {"service_date": "2026-08-07"},
+    )
+
+    assert derived_response.status_code == 200
+    assert derived_response.json()["geometry"]["derived_at"].endswith("Z")
+    assert derived_response.json()["geometry"] == {
+        "attribution": "© OpenStreetMap contributors",
+        "attribution_url": "https://www.openstreetmap.org/copyright",
+        "coordinates": [[101.6, 3.1], [101.65, 3.14], [101.7, 3.2]],
+        "derivation_version": "ktmb-osm-rail-v1",
+        "derived_at": derived_response.json()["geometry"]["derived_at"],
+        "infrastructure_content_sha256": "b" * 64,
+        "infrastructure_snapshot": str(snapshot.id),
+        "quality": "matched_infrastructure",
+        "shape_id": None,
+        "source": "derived_infrastructure",
+        "source_version": str(version.id),
+        "type": "LineString",
+    }
+    assert fallback_response.status_code == 200
+    assert fallback_response.json()["geometry"]["quality"] == "stop_sequence"
+    assert fallback_response.json()["geometry"]["attribution"] is None
+    assert fallback_response.json()["geometry"]["infrastructure_snapshot"] is None
 
 
 @pytest.mark.django_db

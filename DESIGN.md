@@ -209,8 +209,16 @@ has an inline no-results state.
   always include text and semantic status treatment.
 - **Service health:** dense sortable table with feed, canonical operator, city, agency,
   normalized modes, static/realtime state, last successful fetch, and live/stale/
-  unclassified vehicle counts. Scheduled-only, awaiting-first-fetch, and unavailable
-  use distinct labelled status treatments.
+  unclassified vehicle counts. Geometry coverage retains separate official, derived,
+  approximate, and unavailable counts. When derived coverage is nonzero, show the latest
+  derivation time as text; it is source provenance, not a freshness or ETA signal.
+  Scheduled-only, awaiting-first-fetch, and unavailable use distinct labelled status
+  treatments.
+
+- **Derived alignment provenance:** a `matched_infrastructure` route always uses the
+  `Infrastructure-matched alignment` label and linked OpenStreetMap attribution. The detail
+  text also names the immutable snapshot and matcher version. It must never borrow the
+  official-shape label, route treatment, or freshness colour.
 - **Responsive behavior:** 375px and 768px stack the workspaces and expose a map/list
   switcher; the 1280px layout uses a 12-column split. A safety-cap notice offers
   “Load more vehicles”. Errors, empty data, partial coverage, SSE interruption, and

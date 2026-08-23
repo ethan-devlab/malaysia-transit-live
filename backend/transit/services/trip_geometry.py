@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import UTC
 from itertools import pairwise
 from typing import Final, Literal
 
 from transit.models import GtfsShapePoint, GtfsTrip, StaticFeedVersion
+from transit.services.rail_infrastructure import latest_accepted_alignment
 
 GeometryQuality = Literal[
     "official_shape",
@@ -32,6 +34,11 @@ class ResolvedTripGeometry:
     source: GeometrySource
     source_version: str
     attribution: str | None = None
+    attribution_url: str | None = None
+    derivation_version: str | None = None
+    derived_at: str | None = None
+    infrastructure_content_sha256: str | None = None
+    infrastructure_snapshot: str | None = None
 
 
 def resolve_trip_geometry(
@@ -82,6 +89,40 @@ def resolve_trip_geometry(
     )
 
 
+def matched_infrastructure_geometry(
+    version: StaticFeedVersion,
+    trip: GtfsTrip,
+) -> ResolvedTripGeometry | None:
+    """Convert the newest valid stored alignment into resolver-safe provenance."""
+    alignment = latest_accepted_alignment(version, trip)
+    if alignment is None:
+        return None
+    coordinates = tuple(
+        (float(longitude), float(latitude))
+        for coordinate in alignment.coordinates
+        if isinstance(coordinate, list)
+        and len(coordinate) == 2
+        and isinstance((longitude := coordinate[0]), (int, float))
+        and isinstance((latitude := coordinate[1]), (int, float))
+    )
+    if len(_distinct_coordinates(coordinates)) < 2:
+        return None
+    snapshot = alignment.snapshot
+    return ResolvedTripGeometry(
+        attribution=snapshot.attribution,
+        attribution_url=snapshot.attribution_url,
+        coordinates=coordinates,
+        derivation_version=alignment.derivation_version,
+        derived_at=alignment.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        infrastructure_content_sha256=snapshot.content_sha256,
+        infrastructure_snapshot=str(snapshot.id),
+        quality="matched_infrastructure",
+        shape_id=None,
+        source="derived_infrastructure",
+        source_version=str(version.id),
+    )
+
+
 def _valid_matched_infrastructure(
     geometry: ResolvedTripGeometry | None,
     version_id: str,
@@ -93,6 +134,11 @@ def _valid_matched_infrastructure(
         and geometry.source_version == version_id
         and geometry.shape_id is None
         and geometry.attribution
+        and geometry.attribution_url
+        and geometry.derivation_version
+        and geometry.derived_at
+        and geometry.infrastructure_content_sha256
+        and geometry.infrastructure_snapshot
         and geometry.coordinates
         and len(_distinct_coordinates(geometry.coordinates)) >= 2
     )
@@ -119,10 +165,7 @@ def _shape_covers_terminal_stops(
 
 
 def _distance_to_polyline_metres(point: Coordinate, line: tuple[Coordinate, ...]) -> float:
-    return min(
-        _point_to_segment_metres(point, start, end)
-        for start, end in pairwise(line)
-    )
+    return min(_point_to_segment_metres(point, start, end) for start, end in pairwise(line))
 
 
 def _point_to_segment_metres(

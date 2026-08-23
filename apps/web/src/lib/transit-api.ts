@@ -103,6 +103,14 @@ const tripGeometrySchema = z.discriminatedUnion("quality", [
     source: z.literal("derived_infrastructure"),
     source_version: z.string().min(1),
     attribution: z.string().min(1),
+    attribution_url: z.string().url().optional(),
+    derivation_version: z.string().min(1).optional(),
+    derived_at: z.string().datetime().optional(),
+    infrastructure_content_sha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    infrastructure_snapshot: z.string().min(1).optional(),
   }),
   z.object({
     type: z.literal("LineString"),

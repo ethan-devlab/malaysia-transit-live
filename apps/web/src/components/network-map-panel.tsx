@@ -454,7 +454,20 @@ function MapStatus({
     return (
       <p className="text-sm text-muted-foreground">
         <span className="font-medium text-foreground">Infrastructure-matched alignment.</span>{" "}
-        {geometry.attribution}
+        <a
+          className="underline decoration-current/50 underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          href={geometry.attribution_url ?? "https://www.openstreetmap.org/copyright"}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {geometry.attribution}
+        </a>
+        {geometry.infrastructure_snapshot && geometry.derivation_version ? (
+          <>
+            {" "}
+            Snapshot {geometry.infrastructure_snapshot}; matcher {geometry.derivation_version}.
+          </>
+        ) : null}
       </p>
     )
   }

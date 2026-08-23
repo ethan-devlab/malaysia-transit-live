@@ -52,6 +52,7 @@ const dashboardSourceSchema = z.object({
     matched_infrastructure_count: z.number().int().nonnegative(),
     stop_sequence_count: z.number().int().nonnegative(),
     unavailable_count: z.number().int().nonnegative(),
+    matched_infrastructure_derived_at: z.string().datetime().nullable().optional(),
   }),
 })
 const dashboardSchema = z.object({

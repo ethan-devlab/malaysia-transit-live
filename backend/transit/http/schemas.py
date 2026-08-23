@@ -76,6 +76,11 @@ class TripGeometry(Schema):
     source: Literal["gtfs", "derived_infrastructure", "scheduled_stops", "none"]
     source_version: str
     attribution: str | None
+    attribution_url: str | None = None
+    derivation_version: str | None = None
+    derived_at: str | None = None
+    infrastructure_content_sha256: str | None = None
+    infrastructure_snapshot: str | None = None
 
 
 class TripDetail(Schema):
@@ -200,6 +205,7 @@ class DashboardGeometryCoverage(Schema):
     matched_infrastructure_count: int
     stop_sequence_count: int
     unavailable_count: int
+    matched_infrastructure_derived_at: str | None = None
 
 
 class DashboardSource(Schema):

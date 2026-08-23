@@ -483,6 +483,71 @@ fallback-recovery path.
 - Do not download, query, or route against this graph during a browser or public API
   request.
 
+##### Initial source contract and local runbook
+
+Phase 3 uses a fixed-date Geofabrik OpenStreetMap PBF extract as the raw source, beginning
+with `malaysia-singapore-brunei-260801.osm.pbf` captured on `2026-08-01T22:57:54Z`.
+One offline Osmium pass extracts only `rail` and `narrow_gauge` ways, including their
+referenced nodes, to a local OSM XML snapshot. The source URL and dated filename identify
+the raw PBF; the importer records the SHA-256 of the exact filtered XML it normalizes,
+the supplied source timestamp, actual graph extent, ODbL 1.0 licence, OpenStreetMap
+attribution URL, graph schema version, and import status. The older
+[`docs/infrastructure/ktmb-rail.overpassql`](../infrastructure/ktmb-rail.overpassql)
+remains a diagnostic query only; it is not the production import path.
+
+The first local validation imported raw PBF SHA-256
+`d217317e6f94473af7f55014dbfccf0c7e66894b6e86a93d717753ef009c00b9` and filtered
+OSM XML SHA-256 `fa6aa50e26978379c43d01dccfefe28e7f346f837eb246d3d049e4bf4ea19d99`.
+The latter is snapshot `1` in the local database and is the content hash attached to
+derived geometry rows. Both source files remain local, Git-ignored operator artifacts.
+
+The raw snapshot belongs under `local-data/archives/infrastructure/` and is intentionally
+ignored by Git. A raw source file must never be copied into browser assets, an API response,
+or a public static directory. The public response contains only a bounded selected-trip line
+and its provenance.
+
+After the local Compose image has been rebuilt, run the following commands from the repository
+root. The one-off Debian container installs `osmium-tool` only inside that disposable container;
+the application image and public runtime do not gain a new dependency. Replace `SNAPSHOT_ID`
+with the value printed by the import command.
+
+```text
+$archiveRoot = (Resolve-Path 'local-data\archives').Path
+curl.exe --fail --location --output "$archiveRoot\infrastructure\malaysia-singapore-brunei-260801.osm.pbf" https://download.geofabrik.de/asia/malaysia-singapore-brunei-260801.osm.pbf
+docker run --rm --mount "type=bind,src=$archiveRoot,dst=/data" debian:bookworm-slim sh -ec "apt-get update && apt-get install -y --no-install-recommends osmium-tool && osmium tags-filter --overwrite --output /data/infrastructure/ktmb-rail-260801.osm /data/infrastructure/malaysia-singapore-brunei-260801.osm.pbf w/railway=rail w/railway=narrow_gauge"
+docker compose --env-file .env.local -f compose.local.yml exec -T worker /app/.venv/bin/python manage.py import_rail_infrastructure --archive /var/lib/transit/archives/infrastructure/ktmb-rail-260801.osm --source-url https://download.geofabrik.de/asia/malaysia-singapore-brunei-260801.osm.pbf --source-captured-at 2026-08-01T22:57:54Z
+docker compose --env-file .env.local -f compose.local.yml exec -T worker /app/.venv/bin/python manage.py derive_ktmb_alignments --snapshot SNAPSHOT_ID --report /var/lib/transit/archives/infrastructure/ktmb-review-YYYYMMDD.json
+```
+
+Both commands are idempotent for the same content hash, active static version, graph snapshot,
+matcher configuration hash, and derivation version. The review report lists every eligible
+shape-less trip as `accepted`, `rejected`, or `ambiguous`, with reason, metrics, and a bounded
+OpenStreetMap map link. An operator may explicitly withdraw a bad graph:
+
+```text
+docker compose --env-file .env.local -f compose.local.yml exec -T worker /app/.venv/bin/python manage.py invalidate_rail_infrastructure --snapshot SNAPSHOT_ID --reason "source review found an incorrect branch"
+```
+
+Invalidation immediately excludes that snapshot from resolution and refreshes only affected
+static-version coverage. It never changes a derived row into `official_shape`.
+
+##### Phase 3 behavioural scenarios
+
+- Given a local, timestamped OSM snapshot with permitted railway ways, when it is imported,
+  then its content hash, extent, licence, attribution, nodes, and edges are persisted without
+  any public request making network access.
+- Given ordered KTMB stops and a continuous permitted path, when matching runs, then the
+  persisted result follows the stop order and records confidence metrics.
+- Given a nearer graph node on a disconnected branch, when matching runs, then the matcher
+  chooses the connected ordered path or safely rejects; it never independently snaps every
+  station to its nearest track.
+- Given equal-cost viable branches, when matching runs, then the result is `ambiguous` and the
+  trip retains a `stop_sequence` or `unavailable` fallback.
+- Given a valid official GTFS shape and an accepted derived alignment, when a trip is read,
+  then the official shape wins automatically.
+- Given an invalidated infrastructure snapshot, when the trip is read, then its derived
+  provenance disappears and the resolver safely falls back.
+
 #### Constrained matching pipeline
 
 - Resolve candidate graph nodes for ordered KTMB stops.

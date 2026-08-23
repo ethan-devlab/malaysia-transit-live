@@ -165,22 +165,32 @@ describe("trip route geometry", () => {
   })
 
   it("accepts attributed infrastructure geometry and rejects malformed contracts", () => {
-    expect(() =>
-      parseTripDetail(
-        tripPayload({
-          type: "LineString",
-          coordinates: [
-            [101.6, 3.1],
-            [101.7, 3.2],
-          ],
-          quality: "matched_infrastructure",
-          shape_id: null,
-          source: "derived_infrastructure",
-          source_version: "graph-1",
-          attribution: "OpenStreetMap contributors",
-        }),
-      ),
-    ).not.toThrow()
+    const derivedTrip = parseTripDetail(
+      tripPayload({
+        type: "LineString",
+        coordinates: [
+          [101.6, 3.1],
+          [101.7, 3.2],
+        ],
+        quality: "matched_infrastructure",
+        shape_id: null,
+        source: "derived_infrastructure",
+        source_version: "static-version-1",
+        attribution: "© OpenStreetMap contributors",
+        attribution_url: "https://www.openstreetmap.org/copyright",
+        derivation_version: "ktmb-osm-rail-v1",
+        derived_at: "2026-08-23T00:00:00Z",
+        infrastructure_content_sha256: "a".repeat(64),
+        infrastructure_snapshot: "42",
+      }),
+    )
+
+    expect(derivedTrip.geometry).toMatchObject({
+      attribution_url: "https://www.openstreetmap.org/copyright",
+      derivation_version: "ktmb-osm-rail-v1",
+      infrastructure_snapshot: "42",
+      quality: "matched_infrastructure",
+    })
     expect(() =>
       parseTripDetail(
         tripPayload({

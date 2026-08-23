@@ -520,6 +520,15 @@ function HealthOverview({
                     {source.geometry_coverage.matched_infrastructure_count} matched ·{" "}
                     {source.geometry_coverage.stop_sequence_count} approximate ·{" "}
                     {source.geometry_coverage.unavailable_count} unavailable
+                    {source.geometry_coverage.matched_infrastructure_derived_at ? (
+                      <span className="block">
+                        Last derived{" "}
+                        {new Date(
+                          source.geometry_coverage.matched_infrastructure_derived_at,
+                        ).toLocaleString()}
+                        .
+                      </span>
+                    ) : null}
                   </span>
                 </td>
                 <td className="px-3 py-3 text-xs text-muted-foreground">
