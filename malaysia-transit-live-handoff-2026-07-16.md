@@ -1,7 +1,9 @@
 # Malaysia Transit Live — Development Handoff
 
-**Prepared:** 2026-07-16  
-**Workspace:** `C:\Users\JC\Desktop\program\CurrentWorkspace\gtfs_realtime`  
+**Prepared:** 2026-07-16
+
+**Workspace:** `C:\Users\JC\Desktop\program\CurrentWorkspace\gtfs_realtime`
+
 **Runtime:** Windows + Docker Desktop, local-only at `http://127.0.0.1:8080`
 
 ## Purpose for the next agent
